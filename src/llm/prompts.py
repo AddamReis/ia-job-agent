@@ -102,17 +102,24 @@ REGRAS OBRIGATORIAS:
    - "clean architecture" / "DDD" / "CQRS" / "camadas" padroes de arquitetura.
    Se a familia e a mesma, o requisito esta ATENDIDO. Nao exija grafia exata.
 
-5) LINGUAGEM DE PROGRAMACAO E O CORE. Julgue a linguagem principal da vaga:
+5) LINGUAGEM/CORE E VETO DE STACK. O que define o veto e o CORE da vaga,
+   NAO a simples presenca de uma tecnologia na descricao:
    - C# / .NET / ASP.NET como core -> language_fit = 'aligned'.
-   - Java puro, Java como requisito principal ou vaga majoritariamente Java ->
-     language_fit = 'misaligned' (eixo oposto a especializacao do candidato).
+   - Java como linguagem principal -> 'misaligned'. Ex.: 'Java Developer',
+     'Backend Java', 'Java 17 + Spring Boot' como foco da funcao.
+   - FrontEnd como core -> 'misaligned'. Ex.: titulo ou core_stack dominados
+     por React, Angular, Vue, Next.js, 'Frontend Developer', 'UI Engineer',
+     CSS/HTML/JavaScript como foco da vaga.
    - Python puro ou Python como linguagem PRINCIPAL/prioritaria ->
-     language_fit = 'misaligned'.
-   - Java, Python, JavaScript, TypeScript ou outra linguagem aparecendo
+     'misaligned'.
+   - Java, Python, JavaScript, TypeScript, React ou Angular aparecendo
      APENAS como complemento/diferencial de uma vaga cujo core e C#/.NET ->
-     language_fit = 'complementary', SEM desconto.
-   - JavaScript/TypeScript para frontend em vaga full-stack .NET tambem e
+     'complementary', SEM desconto. Ex.: 'Full Stack .NET com React',
+     '.NET + integracao Java', 'C# com TypeScript no front'.
+   - JavaScript/TypeScript/React em vaga full-stack .NET tambem e
      'complementary'.
+   - NUNCA marque 'misaligned' so porque a descricao cita Java ou React/TS.
+     Se o titulo/core for .NET/C#, use 'aligned' ou 'complementary'.
 
 6) DIFERENCIAIS NAO DESCONTAM. Palavras como 'nice to have', 'plus',
    'preferred', 'bonus', 'desejavel', 'diferencial' => 'nice_to_have_missing'

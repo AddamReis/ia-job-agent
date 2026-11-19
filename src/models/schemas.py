@@ -78,7 +78,8 @@ class JobFitAssessment(BaseModel):
 
     core_language: str = ""
     # aligned = C#/.NET é o core; complementary = outra linguagem apenas
-    # complementar; misaligned = Java puro / Python principal / stack oposta.
+    # complementar (inclusive Java/React/TS em vaga full-stack .NET);
+    # misaligned = Java/FrontEnd/Python como core, ou stack oposta.
     language_fit: Literal["aligned", "complementary", "misaligned"] = "aligned"
     language_reason: str = ""
     # Fração de aderência técnica JÁ ajustada pelas regras semânticas (0..1).

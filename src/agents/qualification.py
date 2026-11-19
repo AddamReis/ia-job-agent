@@ -246,6 +246,89 @@ def job_side_language_reason(assessment: "JobFitAssessment") -> str:
     return reason[:180] or "a vaga exige stack diferente da especialização"
 
 
+# Veto de CORE: Java/FrontEnd só reprovam quando são o foco da vaga. .NET/C#
+# no título/core do analista protege a vaga; .NET apenas nos requisitos também
+# protege, mas perde para um sinal explícito de Java/FrontEnd no título/core.
+_DOTNET_CORE_RE = re.compile(r"\.net|dotnet|asp\.net|c\s*#|\bcsharp\b", re.I)
+_JAVA_CORE_RE = re.compile(r"\bjava\b(?!script)", re.I)
+_FRONTEND_CORE_RE = re.compile(
+    r"\bfront[\s-]?end\b|\breact(?:\.?js)?\b|\bangular\b|\bvue(?:\.?js)?\b|"
+    r"\bnext\.?js\b|\bui\s+(?:developer|engineer)\b",
+    re.I,
+)
+
+
+def _dotnet_core_signals(
+    job: "JobOpportunity",
+    facts: "ExtractedJobFacts",
+    assessment: "JobFitAssessment",
+) -> tuple[bool, bool]:
+    """Sinal forte (título/core) e fraco (requisitos) de que .NET é o core.
+
+    O sinal forte vence: título 'Java Developer' com .NET em required_skills
+    continua sendo vaga Java e deve ser recusada.
+    """
+    core_stack = list(assessment.core_stack or [])
+    explicit = bool(
+        _DOTNET_CORE_RE.search(job.title or "")
+        or _DOTNET_CORE_RE.search(assessment.core_language or "")
+        or (core_stack and _DOTNET_CORE_RE.search(str(core_stack[0])))
+    )
+    required = any(_DOTNET_CORE_RE.search(str(skill)) for skill in facts.required_skills)
+    return explicit, required
+
+
+def _core_matches(
+    job: "JobOpportunity", assessment: "JobFitAssessment", pattern: re.Pattern[str]
+) -> bool:
+    """Sinaliza que Java/FrontEnd é o core, não mera citação na descrição."""
+    core_stack = list(assessment.core_stack or [])
+    return bool(
+        pattern.search(job.title or "")
+        or pattern.search(assessment.core_language or "")
+        or (core_stack and pattern.search(str(core_stack[0])))
+    )
+
+
+def stack_mismatch_reason(
+    job: "JobOpportunity",
+    facts: "ExtractedJobFacts",
+    assessment: "JobFitAssessment | None",
+) -> str | None:
+    """Veto semântico de core: Java/FrontEnd focados reprovam; .NET protege.
+
+    O score não participa: é o core da vaga que não bate com a especialização.
+    Se .NET/C# é o core, Java/React/TypeScript citados como complemento não
+    geram veto — nem quando o analista marcou 'misaligned' por engano.
+    """
+    if assessment is None:
+        return None
+    explicit_dotnet, required_dotnet = _dotnet_core_signals(job, facts, assessment)
+    if explicit_dotnet:
+        return None
+    if _core_matches(job, assessment, _JAVA_CORE_RE):
+        return "A vaga exige Java como linguagem principal (core), sem C#/.NET."
+    if _core_matches(job, assessment, _FRONTEND_CORE_RE):
+        return (
+            "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
+            "sem C#/.NET."
+        )
+    if required_dotnet:
+        return None
+    # Fatos extraídos da descrição cobrem títulos genéricos ("Software
+    # Engineer") em que o analista não preencheu core_language/core_stack.
+    if any(_JAVA_CORE_RE.search(str(skill)) for skill in facts.required_skills):
+        return "A vaga exige Java como linguagem principal (core), sem C#/.NET."
+    if any(_FRONTEND_CORE_RE.search(str(skill)) for skill in facts.required_skills):
+        return (
+            "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
+            "sem C#/.NET."
+        )
+    if assessment.language_fit == "misaligned":
+        return job_side_language_reason(assessment)
+    return None
+
+
 _EASY_MARKS = ("easy apply", "candidatura rápida", "candidatura rapida")
 _EXTERNAL_MARKS = (
     "apply on company", "company website", "site da empresa", "apply externally",
@@ -556,6 +639,9 @@ class JobQualificationAgent:
 
         score = min(100, sum(breakdown.values()))
 
+        # Veto de core calculado à parte: se não houver conflito de stack, a
+        # cadeia abaixo continua avaliando tecnologia, remoto, moeda, etc.
+        stack_reject = stack_mismatch_reason(job, facts, assessment)
         reject_reason: str | None = None
         stale = self._stale_reason(job)
         if stale:
@@ -572,11 +658,9 @@ class JobQualificationAgent:
                 "exige experiência em setor ausente no perfil: "
                 + ", ".join(missing_domains)
             )
-        elif assessment is not None and assessment.language_fit == "misaligned":
-            # Linguagem principal oposta à especialização C#/.NET (Java puro,
-            # Python principal, stack sem .NET). Não depende do score: é o core
-            # da vaga que não bate com o perfil.
-            reject_reason = job_side_language_reason(assessment)
+        elif stack_reject:
+            # Java/FrontEnd focados reprovam; em vaga .NET são complementares.
+            reject_reason = stack_reject
         elif (
             tech_ratio is not None
             and reject_cfg.technology_mismatch

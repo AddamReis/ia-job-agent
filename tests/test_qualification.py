@@ -64,6 +64,25 @@ def _job(location: str, salary_raw: str, **overrides) -> JobOpportunity:
     return JobOpportunity(**data)
 
 
+def _fit_agent(
+    assessment: JobFitAssessment, facts: ExtractedJobFacts | None = None
+) -> JobQualificationAgent:
+    """Agente com analista semântico controlado (o StubLLM só devolve fatos)."""
+    resolved = facts if facts is not None else _facts()
+
+    class FitLLM:
+        def structured(self, messages, schema):
+            if schema is JobFitAssessment:
+                return assessment
+            return resolved
+
+    profile = CandidateProfile(
+        years_experience=7,
+        skills={"backend": [".NET", "C#", "SQL Server", "AWS"]},
+    )
+    return JobQualificationAgent(FitLLM(), profile, StubRepo(), Settings.load())
+
+
 def test_remote_and_usd_are_approved():
     job = _job("Brazil (Remote)", "US$ 120,000 - US$ 150,000")
     _agent(_facts()).qualify(job)
@@ -152,13 +171,13 @@ def test_semantic_rejection_details_only_describe_the_job_side():
                     technical_fit=0.2,
                     core_stack=["Node.js", "TypeScript", "NestJS"],
                 )
-            return _facts()
+            return _facts(required_skills=["Node.js", "TypeScript"])
 
     profile = CandidateProfile(
         years_experience=7, skills={"backend": [".NET", "C#", "SQL Server", "AWS"]}
     )
     agent = JobQualificationAgent(FitLLM(), profile, StubRepo(), Settings.load())
-    job = _job("Brazil (Remote)", "US$ 120,000")
+    job = _job("Brazil (Remote)", "US$ 120,000", title="Node.js Engineer")
     agent.qualify(job)
 
     assert job.status.value == "REJECTED_BY_FILTER"
@@ -168,6 +187,128 @@ def test_semantic_rejection_details_only_describe_the_job_side():
     # O cross-check completo continua disponível para auditoria.
     assert job.fit_assessment is not None
     assert job.fit_assessment.language_reason == verbose
+
+
+def test_java_focused_job_is_rejected():
+    """Java como core reprova, mesmo que a descrição cite React como plus."""
+    assessment = JobFitAssessment(
+        core_language="Java",
+        language_fit="misaligned",
+        language_reason="A vaga exige Java como linguagem principal (core).",
+        technical_fit=0.3,
+        core_stack=["Java", "Spring Boot", "Hibernate"],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title="Senior Java Developer",
+        description="Core Java 17, Spring Boot and Hibernate. React is a plus.",
+    )
+    _fit_agent(assessment, _facts(required_skills=["Java", "Spring Boot"])).qualify(job)
+
+    assert job.qualification.decision == "SKIP"
+    assert "Java" in job.qualification.hard_reject_reason
+    assert "linguagem principal" in job.qualification.hard_reject_reason
+
+
+def test_frontend_focused_job_is_rejected():
+    """React/UI como core reprova, ainda que o score consiga ser alto."""
+    assessment = JobFitAssessment(
+        core_language="React/TypeScript",
+        language_fit="misaligned",
+        language_reason="A vaga exige React/TypeScript como core.",
+        technical_fit=0.9,
+        core_stack=["React", "TypeScript", "Next.js", "CSS"],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title="Senior Frontend Developer",
+        description="React, Next.js, TypeScript and CSS. Node.js only for tooling.",
+    )
+    _fit_agent(assessment, _facts(required_skills=["React", "TypeScript"])).qualify(job)
+
+    assert job.qualification.decision == "SKIP"
+    assert "FrontEnd" in job.qualification.hard_reject_reason
+
+
+def test_frontend_focus_with_generic_title_uses_extracted_facts():
+    assessment = JobFitAssessment(
+        core_language="",
+        language_fit="aligned",
+        technical_fit=0.9,
+        core_stack=[],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title="Software Engineer",
+        description="Build interfaces with React and Next.js.",
+    )
+    _fit_agent(assessment, _facts(required_skills=["React", "Next.js"])).qualify(job)
+
+    assert job.qualification.decision == "SKIP"
+    assert "FrontEnd" in job.qualification.hard_reject_reason
+
+
+def test_java_complement_in_dotnet_job_is_kept():
+    assessment = JobFitAssessment(
+        core_language="C#/.NET",
+        language_fit="complementary",
+        technical_fit=0.9,
+        core_stack=[".NET 8", "C#", "SQL Server", "Java integration"],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title=".NET Developer",
+        description=(
+            "Build .NET 8 APIs with C#. Java integration experience is a plus."
+        ),
+    )
+    _fit_agent(assessment).qualify(job)
+
+    assert job.qualification.decision == "APPLY"
+    assert job.qualification.hard_reject_reason is None
+
+
+def test_react_complement_in_fullstack_dotnet_job_is_kept():
+    assessment = JobFitAssessment(
+        core_language="C#/.NET",
+        language_fit="complementary",
+        technical_fit=0.9,
+        core_stack=[".NET 8", "C#", "React", "SQL Server"],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title="Senior Full Stack Developer (ReactJS + .NET C# WebAPI)",
+        description="Full stack .NET with React front end and C# WebAPI.",
+    )
+    _fit_agent(assessment).qualify(job)
+
+    assert job.qualification.decision == "APPLY"
+    assert job.qualification.hard_reject_reason is None
+
+
+def test_dotnet_title_protects_against_wrong_misaligned_verdict():
+    """Erro do analista em vaga .NET não pode descartar a vaga."""
+    assessment = JobFitAssessment(
+        core_language="Java",
+        language_fit="misaligned",
+        technical_fit=0.9,
+        core_stack=["Java", "Spring Boot"],
+    )
+    job = _job(
+        "Brazil (Remote)",
+        "USD 120,000",
+        title="Senior .NET Developer",
+        description="C#/.NET core. Java knowledge is a plus for integrations.",
+    )
+    _fit_agent(assessment).qualify(job)
+
+    assert job.qualification.decision == "APPLY"
+    assert job.qualification.hard_reject_reason is None
 
 
 def test_national_remote_with_usd_is_allowed():
