@@ -19,7 +19,8 @@ docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml 
 ## Postgres no Spark ( fonte do DBeaver )
 
 O discovery passou a gravar em Postgres no DGX Spark. Assim o DBeaver do notebook
-acessa ao vivo por `jdbc:postgresql://10.10.10.2:5432/jobs`. O SQLite antigo
+acessa ao vivo por `jdbc:postgresql://10.10.10.2:5433/jobs` (a porta 5432 já
+pertence ao Postgres do projeto Conecta Paraguai no mesmo Spark). O SQLite antigo
 (`data/agent.db`) continua no disco do Spark apenas como origem da migração.
 
 Crie `/home/addam/ia-job-agent/.env` **no Spark** (nunca no repo — ele é público):
@@ -76,11 +77,11 @@ Postgres, troque `--target` por `postgresql+psycopg://user:pass@host:5432/jobs`.
 Nova conexão PostgreSQL:
 
 - **Servidor**: `10.10.10.2`
-- **Porta**: `5432`
+- **Porta**: `5433`
 - **Banco**: `jobs`
 - **Usuário**: `jobs`
 - **Senha**: a mesma de `POSTGRES_PASSWORD` no `.env` do Spark
-- **URL JDBC**: `jdbc:postgresql://10.10.10.2:5432/jobs`
+- **URL JDBC**: `jdbc:postgresql://10.10.10.2:5433/jobs`
 
 Driver: PostgreSQL (padrão do DBeaver, `postgres-jdbc`). Depois de conectar,
 a tabela `job_opportunities` deve mostrar as vagas (ex.: 414 após a cópia).
