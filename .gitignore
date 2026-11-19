@@ -5,7 +5,6 @@ __pycache__/
 data/*.db
 data/*.bak*
 data/*.json
-=
 data/logs/
 *.log
 .env

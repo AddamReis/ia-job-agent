@@ -12,31 +12,26 @@ on:
       - ".github/workflows/deploy-discovery.yml"
   workflow_dispatch:
 
+# O Spark está na LAN (10.10.10.2), inalcançável por runners hospedados.
+# O runner self-hosted roda no próprio DGX Spark, sob o usuário addam.
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preparar chave SSH
-        env:
-          DGX_SSH_KEY: ${{ secrets.DGX_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DGX_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
       - name: Sincronizar código e subir robô de dados
         env:
-          DGX_HOST: ${{ secrets.DGX_HOST }}
-          DGX_USER: ${{ secrets.DGX_USER }}
-          DGX_DEPLOY_PATH: ${{ secrets.DGX_DEPLOY_PATH }}
+          DEPLOY_PATH: /home/addam/ia-job-agent
         run: |
-          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            "$DGX_USER@$DGX_HOST" "mkdir -p '$DGX_DEPLOY_PATH/data'"
+          set -euo pipefail
+          mkdir -p "$DEPLOY_PATH/data"
           rsync -az --delete \
             --exclude='.git' --exclude='data' --exclude='.venv' \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
-            ./ "$DGX_USER@$DGX_HOST:$DGX_DEPLOY_PATH/"
-          ssh -i ~/.ssh/deploy_key "$DGX_USER@$DGX_HOST" \
-            "cd '$DGX_DEPLOY_PATH' && docker compose -f deploy/discovery.yaml up -d --build"
+            --exclude='__pycache__' --exclude='.pytest_cache' \
+            "$GITHUB_WORKSPACE/" "$DEPLOY_PATH/"
+          cd "$DEPLOY_PATH"
+          docker compose -f deploy/discovery.yaml up -d --build
+          docker compose -f deploy/discovery.yaml ps
+          docker compose -f deploy/discovery.yaml exec -T discovery \
+            python -c "from src.core.config import Settings; s=Settings.load(); print('browser=', repr(s.browser.source), 'slots=', s.discovery_schedule.slots)"

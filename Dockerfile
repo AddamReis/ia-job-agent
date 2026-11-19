@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata git \
+    && apt-get install -y --no-install-recommends tzdata git libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
@@ -16,7 +16,7 @@ COPY config ./config
 COPY scripts ./scripts
 
 RUN pip install --no-cache-dir . \
-    && python -m playwright install chromium
+    && python -m playwright install --with-deps chromium
 
 VOLUME ["/app/data"]
 

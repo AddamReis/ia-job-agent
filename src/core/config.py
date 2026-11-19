@@ -1,6 +1,7 @@
 """Carregamento e validação da configuração (YAML -> Pydantic)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -310,6 +311,11 @@ class Settings(BaseModel):
             raise ConfigError(f"Configuração obrigatória ausente: {path}")
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            # O discovery roda no DGX com o Chromium embutido do Playwright;
+            # a máquina do operador continua usando o Chrome instalado.
+            browser_source = os.getenv("AI_JOB_BROWSER_SOURCE")
+            if browser_source is not None:
+                data.setdefault("browser", {})["source"] = browser_source
             settings = cls.model_validate(data)
         except Exception as exc:  # pragma: no cover - fallback de diagnóstico
             raise ConfigError(f"Falha ao carregar {path}: {exc}") from exc
