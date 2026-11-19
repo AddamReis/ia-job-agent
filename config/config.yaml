@@ -122,7 +122,6 @@ search:
   # Vaga nacional (ex.: empresa em SP) e permitida se for remota e pagar USD/EUR.
   allow_national_remote: true
   national_countries: ["Brazil"]
-  max_jobs_per_query: 100
 
 qualification:
   min_score: 70

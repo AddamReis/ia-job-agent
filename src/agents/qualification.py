@@ -29,6 +29,7 @@ from ..models.domain import (
     QualificationResult,
 )
 from ..models.schemas import ExtractedJobFacts, JobFitAssessment
+from ..shared.stack_filter import mentions_dotnet, mentions_frontend, mentions_java
 from ..execution.web.linkedin_public import is_remote_public
 from ..storage.database import Repository
 
@@ -246,18 +247,8 @@ def job_side_language_reason(assessment: "JobFitAssessment") -> str:
     return reason[:180] or "a vaga exige stack diferente da especialização"
 
 
-# Veto de CORE: Java/FrontEnd só reprovam quando são o foco da vaga. .NET/C#
-# no título/core do analista protege a vaga; .NET apenas nos requisitos também
-# protege, mas perde para um sinal explícito de Java/FrontEnd no título/core.
-_DOTNET_CORE_RE = re.compile(r"\.net|dotnet|asp\.net|c\s*#|\bcsharp\b", re.I)
-_JAVA_CORE_RE = re.compile(r"\bjava\b(?!script)", re.I)
-_FRONTEND_CORE_RE = re.compile(
-    r"\bfront[\s-]?end\b|\breact(?:\.?js)?\b|\bangular\b|\bvue(?:\.?js)?\b|"
-    r"\bnext\.?js\b|\bui\s+(?:developer|engineer)\b",
-    re.I,
-)
-
-
+# Veto de CORE: usa o mesmo pré-filtro determinístico do discovery. Java e
+# FrontEnd só reprovam quando são o foco; .NET/C# no título/core protege a vaga.
 def _dotnet_core_signals(
     job: "JobOpportunity",
     facts: "ExtractedJobFacts",
@@ -270,23 +261,23 @@ def _dotnet_core_signals(
     """
     core_stack = list(assessment.core_stack or [])
     explicit = bool(
-        _DOTNET_CORE_RE.search(job.title or "")
-        or _DOTNET_CORE_RE.search(assessment.core_language or "")
-        or (core_stack and _DOTNET_CORE_RE.search(str(core_stack[0])))
+        mentions_dotnet(job.title or "")
+        or mentions_dotnet(assessment.core_language or "")
+        or (core_stack and mentions_dotnet(str(core_stack[0])))
     )
-    required = any(_DOTNET_CORE_RE.search(str(skill)) for skill in facts.required_skills)
+    required = any(mentions_dotnet(str(skill)) for skill in facts.required_skills)
     return explicit, required
 
 
 def _core_matches(
-    job: "JobOpportunity", assessment: "JobFitAssessment", pattern: re.Pattern[str]
+    job: "JobOpportunity", assessment: "JobFitAssessment", matcher: Callable[[str], bool]
 ) -> bool:
     """Sinaliza que Java/FrontEnd é o core, não mera citação na descrição."""
     core_stack = list(assessment.core_stack or [])
     return bool(
-        pattern.search(job.title or "")
-        or pattern.search(assessment.core_language or "")
-        or (core_stack and pattern.search(str(core_stack[0])))
+        matcher(job.title or "")
+        or matcher(assessment.core_language or "")
+        or (core_stack and matcher(str(core_stack[0])))
     )
 
 
@@ -306,9 +297,9 @@ def stack_mismatch_reason(
     explicit_dotnet, required_dotnet = _dotnet_core_signals(job, facts, assessment)
     if explicit_dotnet:
         return None
-    if _core_matches(job, assessment, _JAVA_CORE_RE):
+    if _core_matches(job, assessment, mentions_java):
         return "A vaga exige Java como linguagem principal (core), sem C#/.NET."
-    if _core_matches(job, assessment, _FRONTEND_CORE_RE):
+    if _core_matches(job, assessment, mentions_frontend):
         return (
             "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
             "sem C#/.NET."
@@ -317,9 +308,9 @@ def stack_mismatch_reason(
         return None
     # Fatos extraídos da descrição cobrem títulos genéricos ("Software
     # Engineer") em que o analista não preencheu core_language/core_stack.
-    if any(_JAVA_CORE_RE.search(str(skill)) for skill in facts.required_skills):
+    if any(mentions_java(str(skill)) for skill in facts.required_skills):
         return "A vaga exige Java como linguagem principal (core), sem C#/.NET."
-    if any(_FRONTEND_CORE_RE.search(str(skill)) for skill in facts.required_skills):
+    if any(mentions_frontend(str(skill)) for skill in facts.required_skills):
         return (
             "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
             "sem C#/.NET."

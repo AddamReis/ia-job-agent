@@ -72,7 +72,6 @@ class JobResearchAgent:
         """Retorna quantas vagas novas (após dedupe e janela de recência) foram persistidas."""
         self.device.detect_block()
         search_cfg = self.settings.search
-        max_jobs = search_cfg.max_jobs_per_query
         cutoff = datetime.now() - timedelta(hours=search_cfg.recency_hours)
 
         def recent(cards: list[JobOpportunity]) -> list[JobOpportunity]:
@@ -82,25 +81,21 @@ class JobResearchAgent:
             ]
 
         xml = self.device.search(query)
-        cards = recent(extract_job_cards(xml, max_jobs))
+        cards = recent(extract_job_cards(xml))
         found = {card.external_id: card for card in _newest_first(cards)}
 
         for _ in range(self.settings.device.max_scrolls_per_search):
-            if len(found) >= max_jobs:
-                break
             self.device.detect_block()
             before = len(found)
             self.device.scroll_forward()
-            more = recent(
-                extract_job_cards(self.device.page_source(), max_jobs)
-            )
+            more = recent(extract_job_cards(self.device.page_source()))
             for card in _newest_first(more):
                 found.setdefault(card.external_id, card)
             if len(found) == before:
                 break
 
         new_count = 0
-        for card in _newest_first(list(found.values()))[:max_jobs]:
+        for card in _newest_first(list(found.values())):
             card.trace_id = card.trace_id or self.trace_id
             card.source = "linkedin"
             card.url = card.url or f"linkedin://job/{card.external_id}"

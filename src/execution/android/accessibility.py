@@ -193,7 +193,7 @@ def _is_card_noise(value: str, title: str) -> bool:
     return any(fragment in lowered for fragment in _NOISE_JOB_CARD_TEXTS)
 
 
-def _extract_linkedin_job_cards(xml: str, max_jobs: int) -> list[JobOpportunity]:
+def _extract_linkedin_job_cards(xml: str, max_jobs: int | None) -> list[JobOpportunity]:
     """Fallback para o formato real do app: título em content-desc de dismiss."""
     try:
         root = ElementTree.fromstring(xml)
@@ -263,12 +263,12 @@ def _extract_linkedin_job_cards(xml: str, max_jobs: int) -> list[JobOpportunity]
                 apply_marker=apply_marker,
             )
         )
-        if len(cards) >= max_jobs:
+        if max_jobs is not None and len(cards) >= max_jobs:
             break
     return cards
 
 
-def _extract_structural_job_cards(xml: str, max_jobs: int) -> list[JobOpportunity]:
+def _extract_structural_job_cards(xml: str, max_jobs: int | None) -> list[JobOpportunity]:
     """Extrai vagas de árvores com resource-id de card ou nós estruturados."""
     cards: list[JobOpportunity] = []
     seen: set[str] = set()
@@ -319,12 +319,12 @@ def _extract_structural_job_cards(xml: str, max_jobs: int) -> list[JobOpportunit
                 apply_marker=apply_marker,
             )
         )
-        if len(cards) >= max_jobs:
+        if max_jobs is not None and len(cards) >= max_jobs:
             break
     return cards
 
 
-def extract_job_cards(xml: str, max_jobs: int = 25) -> list[JobOpportunity]:
+def extract_job_cards(xml: str, max_jobs: int | None = None) -> list[JobOpportunity]:
     """Extrai vagas da árvore de acessibilidade. Nenhuma imagem é gravada."""
     cards = _extract_structural_job_cards(xml, max_jobs)
     if cards:

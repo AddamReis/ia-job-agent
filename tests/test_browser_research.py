@@ -79,6 +79,105 @@ class StubRepo:
         return name in self.suppressed
 
 
+def _cards_html(titles: list[str], age: str = "2 hours ago") -> str:
+    """Página pública sintética com N cards, IDs distintos e idade explícita."""
+    items: list[dict[str, object]] = []
+    cards: list[str] = []
+    for index, title in enumerate(titles, start=1):
+        job_id = str(4_000_000_000 + index)
+        url = f"https://www.linkedin.com/jobs/view/role-at-acme-{job_id}"
+        items.append({
+            "@type": "ListItem",
+            "position": index,
+            "url": url,
+            "name": title,
+            "disambiguatingDescription": "Acme",
+            "description": "Remote",
+        })
+        cards.append(f'<li><a href="{url}">{title}</a><time>{age}</time></li>')
+    return (
+        '<script type="application/ld+json">'
+        + json.dumps({
+            "@context": "https://schema.org",
+            "@type": "ItemList",
+            "itemListElement": items,
+        })
+        + "</script>"
+        + "".join(cards)
+    )
+
+
+def _settings_for_test(tmp_path: Path) -> Settings:
+    base = Settings.load()
+    return base.model_copy(update={
+        "search": base.search.model_copy(
+            update={"queries": [".NET Engineer"], "locations": ["Brazil"]}
+        ),
+        "storage": base.storage.model_copy(
+            update={"control_file": str(tmp_path / "control.json")}
+        ),
+    })
+
+
+def test_all_recent_jobs_are_saved_without_a_query_cap(tmp_path: Path) -> None:
+    """Toda vaga compatível entra: não existe 'N mais novas por query'."""
+    class ManyBrowser(StubBrowser):
+        def search_page(self, query: str, location: str = "", start: int = 0) -> str:
+            return _cards_html([f".NET Engineer {index}" for index in range(40)])
+
+    repo = StubRepo()
+    agent = BrowserResearchAgent(ManyBrowser(), repo, _settings_for_test(tmp_path))  # type: ignore[arg-type]
+
+    assert agent.run() == 40
+    assert len(repo.saved) == 40
+    assert len({job.external_id for job in repo.saved}) == 40
+
+
+def test_focused_java_and_frontend_titles_are_discarded_early(tmp_path: Path) -> None:
+    """Pré-filtro barato: nem busca descrição para Java/FrontEnd focados."""
+    titles = [
+        "Senior Java Developer",
+        "Senior Frontend Developer",
+        ".NET Engineer",
+        "Full Stack Developer (React + .NET C# WebAPI)",
+    ]
+
+    class CountingBrowser(StubBrowser):
+        def __init__(self) -> None:
+            self.descriptions = 0
+
+        def search_page(self, query: str, location: str = "", start: int = 0) -> str:
+            return _cards_html(titles)
+
+        def job_page(self, url: str) -> str:
+            self.descriptions += 1
+            return DETAIL_HTML
+
+    browser = CountingBrowser()
+    repo = StubRepo()
+    agent = BrowserResearchAgent(browser, repo, _settings_for_test(tmp_path))  # type: ignore[arg-type]
+
+    assert agent.run() == 2
+    assert browser.descriptions == 2  # Java/FrontEnd nem abriram a página
+    assert {job.title for job in repo.saved} == {
+        ".NET Engineer",
+        "Full Stack Developer (React + .NET C# WebAPI)",
+    }
+
+
+def test_old_jobs_are_not_saved_as_expired(tmp_path: Path) -> None:
+    """Fora da janela não é compatível: não ocupa banco nem tempo do robô."""
+    class OldBrowser(StubBrowser):
+        def search_page(self, query: str, location: str = "", start: int = 0) -> str:
+            return _cards_html([".NET Engineer"], age="3 days ago")
+
+    repo = StubRepo()
+    agent = BrowserResearchAgent(OldBrowser(), repo, _settings_for_test(tmp_path))  # type: ignore[arg-type]
+
+    assert agent.run() == 0
+    assert repo.saved == []
+
+
 def test_card_ages_are_not_swapped_between_neighbors() -> None:
     html = """
     <li><a href="https://www.linkedin.com/jobs/view/job-at-a-111111111">A</a>

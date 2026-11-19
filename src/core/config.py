@@ -109,7 +109,6 @@ class SearchConfig(BaseModel):
     allow_national_remote: bool = True
     national_countries: list[str] = Field(default_factory=lambda: ["Brazil"])
     require_explicit_recency: bool = True
-    max_jobs_per_query: int = 100
 
 
 class WeightsConfig(BaseModel):

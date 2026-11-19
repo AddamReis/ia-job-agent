@@ -15,7 +15,6 @@ from ..core.config import Settings
 from ..core.events import EventBus
 from ..core.geo import normalize_location
 from ..core.logging import log_event
-from ..core.state import JobStatus
 from ..execution.android.accessibility import parse_posted
 from ..execution.web.linkedin_public import (
     LinkedInPublicBrowser,
@@ -30,6 +29,7 @@ from ..execution.web.linkedin_public import (
     parse_item_list,
 )
 from ..models.domain import JobOpportunity
+from ..shared.stack_filter import is_off_stack_title
 from ..storage.database import Repository
 from .research import _is_recent, _newest_first
 
@@ -262,13 +262,24 @@ class BrowserResearchAgent:
                 if not cards:
                     break
 
-        candidates = _newest_first(list(found.values()))[: search_cfg.max_jobs_per_query]
-        new_count = 0
-        for job in candidates:
-            # Empresa com supressao TEMPORARIA comprovada (ex.: so aceita
-            # candidatos de NJ/NY/Charlotte) nao e salva. O filtro atua AQUI,
-            # antes de gravar — a busca publica continua normal.
+        # Filtros BARATOS primeiro — nenhum deles abre a página da vaga. Só
+        # depois buscamos a descrição, que é a etapa cara (1 request + delay_ms
+        # por candidata). Não existe teto de "N vagas por query": toda vaga
+        # compatível com a janela entra no banco.
+        eligible: list[JobOpportunity] = []
+        discarded = {"off_stack": 0, "suppressed": 0, "outside_window": 0}
+        for job in _newest_first(list(found.values())):
+            if is_off_stack_title(job.title):
+                discarded["off_stack"] += 1
+                log_event(
+                    "discarded_off_stack_title",
+                    external_id=job.external_id,
+                    title=job.title,
+                )
+                continue
+            # Empresa com supressão TEMPORÁRIA comprovada não é salva.
             if self.repo.is_company_suppressed(job.company):
+                discarded["suppressed"] += 1
                 log_event(
                     "company_suppressed_discarded",
                     company=job.company,
@@ -276,11 +287,15 @@ class BrowserResearchAgent:
                     external_id=job.external_id,
                 )
                 continue
-            # Fora da janela de 6h: mantém no banco como EXPIRED (nunca exclui).
+            # Fora da janela da execução: nem descrição busca mais. Vaga antiga
+            # não é compatível e não deve ocupar o banco nem o tempo do robô.
             if not _is_recent(job, cutoff, search_cfg.require_explicit_recency):
-                job.status = JobStatus.EXPIRED
-                self.repo.upsert_job(job)
+                discarded["outside_window"] += 1
                 continue
+            eligible.append(job)
+
+        new_count = 0
+        for job in eligible:
             self._enrich_description(job, reference)
             # Filtro remoto na própria fonte pública: sem descrição ou sem
             # evidência de 100% remoto, a vaga nem entra no banco.
@@ -293,6 +308,7 @@ class BrowserResearchAgent:
                     location=job.location,
                 )
                 continue
+            # dedupe_hash do repositório evita duplicidade entre queries/slots.
             if not self.repo.upsert_job(job):
                 continue
             if job.description:
@@ -310,6 +326,8 @@ class BrowserResearchAgent:
             "search_finished",
             query_length=len(query),
             found=len(found),
+            eligible=len(eligible),
+            discarded=discarded,
             new=new_count,
             source="browser",
         )
@@ -322,7 +340,9 @@ class BrowserResearchAgent:
             location="(concluído)",
             page=0,
             cards_last=len(found),
-            recent_unique=len(found),
+            found_unique=len(found),
+            recent_unique=len(eligible),
+            discarded=discarded,
             new_saved=saved_total + new_count,
         )
         return new_count
