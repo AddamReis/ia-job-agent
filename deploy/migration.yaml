@@ -1,6 +1,7 @@
-# Job único de migração de dados (export local -> snapshot -> import no DGX).
+# Jobs únicos de migração de dados.
 #   LOCAL:  docker compose -f deploy/migration.yaml --profile export run --rm export
-#   DGX:    docker compose -f deploy/migration.yaml --profile import run --rm import
+#   DGX:    docker compose -f deploy/postgres.yaml -f deploy/migration.yaml \
+#             --profile copy run --rm copy
 services:
   export:
     image: ia-job-agent:latest
@@ -24,4 +25,18 @@ services:
       "python", "scripts/migrate_data.py", "import",
       "--input", "/app/data/dgx-snapshot.json",
       "--target", "sqlite:////app/data/agent.db"
+    ]
+
+  # Copia o SQLite atual do Spark para o Postgres, sem arquivo intermediário.
+  copy:
+    image: ia-job-agent:latest
+    profiles: ["copy"]
+    working_dir: /app
+    volumes:
+      - ../data:/app/data
+    environment:
+      AI_JOB_DATABASE_URL: ${AI_JOB_DATABASE_URL:-}
+    command: [
+      "python", "scripts/migrate_data.py", "copy",
+      "--source", "sqlite:////app/data/agent.db"
     ]

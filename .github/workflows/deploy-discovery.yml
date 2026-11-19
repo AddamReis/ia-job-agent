@@ -9,6 +9,7 @@ on:
       - "deploy/**"
       - "Dockerfile"
       - "pyproject.toml"
+      - "requirements.txt"
       - ".github/workflows/deploy-discovery.yml"
   workflow_dispatch:
 
@@ -28,10 +29,10 @@ jobs:
           mkdir -p "$DEPLOY_PATH/data"
           rsync -az --delete \
             --exclude='.git' --exclude='data' --exclude='.venv' \
-            --exclude='__pycache__' --exclude='.pytest_cache' \
+            --exclude='.env' --exclude='__pycache__' --exclude='.pytest_cache' \
             "$GITHUB_WORKSPACE/" "$DEPLOY_PATH/"
           cd "$DEPLOY_PATH"
-          docker compose -f deploy/discovery.yaml up -d --build
-          docker compose -f deploy/discovery.yaml ps
-          docker compose -f deploy/discovery.yaml exec -T discovery \
-            python -c "from src.core.config import Settings; s=Settings.load(); print('browser=', repr(s.browser.source), 'slots=', s.discovery_schedule.slots)"
+          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml up -d --build
+          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml ps
+          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml exec -T discovery \
+            python -c "from src.core.config import Settings; from src.storage.database import Repository; s=Settings.load(); r=Repository(); print('database=', r.engine.url.render_as_string(hide_password=True)); print('browser=', repr(s.browser.source), 'slots=', s.discovery_schedule.slots)"

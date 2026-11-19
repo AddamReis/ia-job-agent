@@ -11,7 +11,10 @@ Uso típico (exportar aqui e importar no DGX Spark):
 O alvo também pode ser Postgres:
     --target postgresql+psycopg://user:pass@host:5432/jobs
 
-A importação é idempotente: linhas já existentes (mesma PK) são ignoradas.
+Atalho sem JSON, direto SQLite -> Postgres (lendo a URL de AI_JOB_DATABASE_URL):
+    python scripts/migrate_data.py copy --source sqlite:////app/data/agent.db
+
+Todas as formas são idempotentes: linhas já existentes (mesma PK) são ignoradas.
 """
 from __future__ import annotations
 
@@ -76,7 +79,8 @@ def import_database(target: str, input_path: Path) -> dict[str, int]:
     snapshot = json.loads(input_path.read_text(encoding="utf-8"))
     engine = create_engine(target)
     Base.metadata.create_all(engine)
-    _ensure_columns(engine)  # migrations idempotentes antes de inserir
+    if engine.dialect.name == "sqlite":
+        _ensure_columns(engine)  # migrations incrementais só existem no SQLite
     imported: dict[str, int] = {}
     with engine.begin() as connection:
         for table_name, rows in snapshot.items():
@@ -95,6 +99,42 @@ def import_database(target: str, input_path: Path) -> dict[str, int]:
             imported[table_name] = ok
     engine.dispose()
     return imported
+
+
+def copy_database(source: str, target: str) -> dict[str, int]:
+    """Copia todas as tabelas direto entre bancos, sem arquivo intermediário."""
+    src = create_engine(source)
+    dst = create_engine(target)
+    Base.metadata.create_all(dst)
+    if dst.dialect.name == "sqlite":
+        _ensure_columns(dst)
+
+    src_inspector = inspect(src)
+    copied: dict[str, int] = {}
+    with src.connect() as incoming, dst.begin() as out:
+        for table in Base.metadata.sorted_tables:
+            if not src_inspector.has_table(table.name):
+                continue
+            available = [
+                column["name"]
+                for column in src_inspector.get_columns(table.name)
+                if column["name"] in table.c
+            ]
+            columns = [table.c[name] for name in available]
+            rows = incoming.execute(select(*columns)).mappings().all()
+            ok = 0
+            for row in rows:
+                values = {key: row[key] for key in row.keys()}
+                try:
+                    with out.begin_nested():
+                        out.execute(table.insert().values(**values))
+                    ok += 1
+                except IntegrityError:
+                    pass
+            copied[table.name] = ok
+    src.dispose()
+    dst.dispose()
+    return copied
 
 
 def _database_url(value: str) -> str:
@@ -117,13 +157,27 @@ def main() -> None:
         "--target", default=os.getenv("TARGET_DATABASE_URL", "sqlite:///data/agent.db")
     )
 
+    copy_cmd = sub.add_parser("copy", help="SQLite -> Postgres direto")
+    copy_cmd.add_argument(
+        "--source", default=os.getenv("SOURCE_DATABASE_URL", "sqlite:////app/data/agent.db")
+    )
+    copy_cmd.add_argument(
+        "--target",
+        default=os.getenv("AI_JOB_DATABASE_URL", os.getenv("TARGET_DATABASE_URL", "")),
+    )
+
     args = parser.parse_args()
     if args.command == "export":
         counts = export_database(_database_url(args.source), Path(args.output))
         print(f"Exportado para {args.output}")
-    else:
+    elif args.command == "import":
         counts = import_database(_database_url(args.target), Path(args.input))
         print(f"Importado para {args.target}")
+    else:
+        if not args.target:
+            parser.error("copy exige --target ou AI_JOB_DATABASE_URL")
+        counts = copy_database(_database_url(args.source), args.target)
+        print("Copiado para Postgres")
     for table, total in counts.items():
         print(f"  {table}: {total}")
 

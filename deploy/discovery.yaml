@@ -14,6 +14,8 @@ services:
       TZ: America/Sao_Paulo
       # Chromium embutido no container; o Chrome logado fica só no apply local.
       AI_JOB_BROWSER_SOURCE: ""
+      # Postgres no Spark (vazio mantém o SQLite legado, usado nos testes).
+      AI_JOB_DATABASE_URL: ${AI_JOB_DATABASE_URL:-}
     volumes:
       - ../data:/app/data
       - ../config:/app/config:ro

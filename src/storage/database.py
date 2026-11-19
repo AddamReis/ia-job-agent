@@ -1,8 +1,9 @@
-"""Persistência SQLite com SQLAlchemy 2.0."""
+"""Persistência SQLite/Postgres com SQLAlchemy 2.0."""
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -268,17 +269,30 @@ def dedupe_hash(company: str, title: str, location: str, external_id: str = "", 
 
 class Repository:
     def __init__(
-        self, db_path: Path, known_portals: Collection[str] | None = None
+        self,
+        db_path: Path | None = None,
+        known_portals: Collection[str] | None = None,
+        *,
+        database_url: str | None = None,
     ) -> None:
         self.known_portals = {
             self.normalize_company(portal) for portal in (known_portals or ())
         }
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.engine = create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
+        url = database_url or os.getenv("AI_JOB_DATABASE_URL")
+        if url:
+            # Postgres no DGX Spark: DBeaver acessa a mesma fonte pela rede.
+            self.engine = create_engine(url, pool_pre_ping=True)
+        else:
+            db_path = db_path or Path("data/agent.db")
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.engine = create_engine(
+                f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+            )
         Base.metadata.create_all(self.engine)
-        _ensure_columns(self.engine)
+        if self.engine.dialect.name == "sqlite":
+            # No Postgres o create_all já cria as colunas finais; o helper de
+            # ALTER TABLE é específico da migração incremental do SQLite.
+            _ensure_columns(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     @contextmanager

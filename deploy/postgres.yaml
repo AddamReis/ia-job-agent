@@ -1,0 +1,23 @@
+# Banco relacional do discovery-agent no DGX Spark.
+# Acesso do DBeaver: jdbc:postgresql://10.10.10.2:5432/jobs
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ia-job-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_USER:-jobs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobs} -d ${POSTGRES_DB:-jobs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
