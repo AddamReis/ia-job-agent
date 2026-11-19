@@ -307,6 +307,14 @@ class Settings(BaseModel):
         root = (root or Path(__file__).resolve().parents[2]).resolve()
         path = root / "config" / filename
         if not path.exists():
+            # Quando o pacote é instalado via pip, ``__file__`` fica em
+            # site-packages. O working directory do container (/app) é a
+            # fonte correta da configuração.
+            cwd_root = Path.cwd().resolve()
+            cwd_path = cwd_root / "config" / filename
+            if cwd_path.exists():
+                root, path = cwd_root, cwd_path
+        if not path.exists():
             # Nunca cair no example: ele pode conter provedores proibidos.
             raise ConfigError(f"Configuração obrigatória ausente: {path}")
         try:
