@@ -9,22 +9,34 @@ on:
       - "deploy/**"
       - "Dockerfile"
       - "pyproject.toml"
+      - ".github/workflows/deploy-discovery.yml"
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Atualizar robô de dados no DGX Spark
+      - uses: actions/checkout@v4
+
+      - name: Preparar chave SSH
         env:
-          DGX_HOST: ${{ secrets.DGX_HOST }}
-          DGX_USER: ${{ secrets.DGX_USER }}
           DGX_SSH_KEY: ${{ secrets.DGX_SSH_KEY }}
-          DGX_DEPLOY_PATH: ${{ secrets.DGX_DEPLOY_PATH }}
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "$DGX_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+
+      - name: Sincronizar código e subir robô de dados
+        env:
+          DGX_HOST: ${{ secrets.DGX_HOST }}
+          DGX_USER: ${{ secrets.DGX_USER }}
+          DGX_DEPLOY_PATH: ${{ secrets.DGX_DEPLOY_PATH }}
+        run: |
           ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            "$DGX_USER@$DGX_HOST" \
-            "cd '$DGX_DEPLOY_PATH' && git pull --ff-only && docker compose -f deploy/discovery.yaml up -d --build"
+            "$DGX_USER@$DGX_HOST" "mkdir -p '$DGX_DEPLOY_PATH/data'"
+          rsync -az --delete \
+            --exclude='.git' --exclude='data' --exclude='.venv' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
+            ./ "$DGX_USER@$DGX_HOST:$DGX_DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key "$DGX_USER@$DGX_HOST" \
+            "cd '$DGX_DEPLOY_PATH' && docker compose -f deploy/discovery.yaml up -d --build"
