@@ -1,0 +1,15 @@
+# Apply-agent (Chrome logado via CDP) — permanece na máquina do operador.
+# Perfil "manual": nunca sobe junto com o discovery no DGX Spark.
+services:
+  apply:
+    image: ia-job-agent:latest
+    container_name: ia-job-agent-apply
+    profiles: ["manual"]
+    working_dir: /app
+    network_mode: host
+    command: ["python", "-m", "src.cli", "browser-apply", "--prepare-only"]
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config:ro

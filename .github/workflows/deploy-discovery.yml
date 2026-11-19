@@ -1,0 +1,30 @@
+name: deploy-discovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "config/**"
+      - "deploy/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Atualizar robô de dados no DGX Spark
+        env:
+          DGX_HOST: ${{ secrets.DGX_HOST }}
+          DGX_USER: ${{ secrets.DGX_USER }}
+          DGX_SSH_KEY: ${{ secrets.DGX_SSH_KEY }}
+          DGX_DEPLOY_PATH: ${{ secrets.DGX_DEPLOY_PATH }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DGX_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            "$DGX_USER@$DGX_HOST" \
+            "cd '$DGX_DEPLOY_PATH' && git pull --ff-only && docker compose -f deploy/discovery.yaml up -d --build"

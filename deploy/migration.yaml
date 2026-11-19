@@ -1,0 +1,27 @@
+# Job único de migração de dados (export local -> snapshot -> import no DGX).
+#   LOCAL:  docker compose -f deploy/migration.yaml --profile export run --rm export
+#   DGX:    docker compose -f deploy/migration.yaml --profile import run --rm import
+services:
+  export:
+    image: ia-job-agent:latest
+    profiles: ["export"]
+    working_dir: /app
+    volumes:
+      - ../data:/app/data
+    command: [
+      "python", "scripts/migrate_data.py", "export",
+      "--source", "sqlite:////app/data/agent.db",
+      "--output", "/app/data/dgx-snapshot.json"
+    ]
+
+  import:
+    image: ia-job-agent:latest
+    profiles: ["import"]
+    working_dir: /app
+    volumes:
+      - ../data:/app/data
+    command: [
+      "python", "scripts/migrate_data.py", "import",
+      "--input", "/app/data/dgx-snapshot.json",
+      "--target", "sqlite:////app/data/agent.db"
+    ]

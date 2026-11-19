@@ -1,0 +1,124 @@
+# Base estruturada extraída de:
+# C:\Users\addam\Downloads\Addam dos Reis Oliveira - Software Engineer.pdf
+# (11/11/2026). Atualize este arquivo quando o currículo mudar.
+
+pessoal:
+  nome: "Addam dos Reis Oliveira"
+  email: "addamreis@gmail.com"
+  telefone: "+55 11 95305-8585"
+  telefone_digits: "11953058585"
+  linkedin: "https://www.linkedin.com/in/addamreis"
+  github: "https://github.com/addamreis"
+  localizacao: "São Paulo, SP, Brasil"
+  idiomas: "Português nativo; inglês intermediário; espanhol intermediário"
+
+experiencia_total:
+  anos: 7
+  descricao: "7 anos e 6 meses de experiência em desenvolvimento de software, atuando desde 05/2019 com C# e .NET."
+  anos_csharp: 7
+
+experiencias:
+  - empresa: "Avanade"
+    cargo: "Backend Software Engineer / Senior Consultant"
+    periodo: "11/2023 - Current"
+    local: "São Paulo, Brasil (Remoto)"
+    setor: "Serviços digitais Microsoft; instituições financeiras e crédito"
+    resumo: "Arquitetura de soluções críticas para grandes instituições financeiras e de crédito no ecossistema Microsoft, como Consultor Sênior."
+    conquistas:
+      - "Classification Engine: motor de regras genérico e parametrizado para triagem automática de reclamações de clientes. Reduziu o tempo de análise crítica de 60 para menos de 15 minutos (75% de redução) e eliminou colisões operacionais."
+      - "Financial Automation (INSS): automação de descontos de benefícios previdenciários com ingestão de dados governamentais e validação de dívidas internas. Substituiu processos manuais de alto risco, mitigando perdas financeiras e operacionais."
+      - "Reinsurance Modernization: integrações complexas de API e recursos orientados a eventos para o ciclo de vida de contratos de resseguro. Redução de 70% nos erros manuais e maior consistência de dados."
+    tecnologias:
+      - ".NET"
+      - "C#"
+      - "Angular"
+      - "AWS Lambda"
+      - "SQS"
+      - "SNS"
+      - "DynamoDB"
+      - "Kafka"
+      - "PostgreSQL"
+      - "SQL Server"
+      - "xUnit"
+      - "BFF Pattern"
+      - "Microservices"
+      - "Serverless"
+
+  - empresa: "Aliare"
+    cargo: "Backend Software Engineer"
+    periodo: "01/2023 - 10/2023"
+    local: "Goiás, Brasil (Remoto)"
+    setor: "Agronegócio"
+    resumo: "Autoridade técnica principal no desenvolvimento de uma plataforma centralizada de Identity and Access Management (IAM)."
+    conquistas:
+      - "Identity Architecture: solução SSO robusta com IdentityServer4 e OAuth2, com controle granular baseado em papéis para múltiplas aplicações do ecossistema."
+      - "Performance Optimization: estratégia própria de compressão Gzip + Base64 reduziu o tamanho dos tokens em 90% sem perda de integridade do payload."
+      - "Event-Driven Integration: sincronização confiável entre o IAM Hub e aplicações downstream usando Kafka e RabbitMQ."
+      - "Technical Mentor: ciclo completo de revisão de código, gestão de dívida técnica e delegação estratégica de tarefas."
+    tecnologias:
+      - ".NET 8"
+      - "IdentityServer4"
+      - "MVC"
+      - "OAuth2"
+      - "Kafka"
+      - "RabbitMQ"
+      - "PostgreSQL"
+      - "SQL Server"
+      - "Hangfire"
+      - "Microservices"
+
+  - empresa: "Autoware Soluções"
+    cargo: "Full Stack Engineer"
+    periodo: "05/2019 - 01/2023"
+    local: "São Paulo, Brasil (Híbrido)"
+    setor: "Automotivo"
+    resumo: "Atuação no ecossistema de pós-venda para grandes marcas automotivas brasileiras e internacionais."
+    conquistas:
+      - "Warranty Module: arquitetura de novo módulo de garantias que substituiu sistemas legados de terceiros e centralizou o fluxo no ecossistema da empresa."
+      - "KPI System (Argentina): reestruturação de sistema de indicadores para a rede de concessionárias argentina, com lógica de benchmarking diário e semanal."
+      - "Reporting Automation: motor dinâmico de Excel com OpenXML SDK transformou dados brutos em relatórios visuais automatizados, eliminando montagem manual de planilhas."
+    tecnologias:
+      - "C#"
+      - ".NET Core"
+      - ".NET Framework"
+      - "ASP.NET"
+      - "React"
+      - "Oracle"
+      - "SQL Server"
+      - "OpenXML SDK"
+      - "Windows Services"
+
+habilidades:
+  backend: [".NET 8", "C#", "Microservices", "Distributed Systems", "RESTful APIs", "Clean Architecture", "DDD", "CQRS", "Serverless"]
+  cloud: ["AWS (Lambda, SQS, SNS, DynamoDB)", "GCP (Functions, Firebase)"]
+  mensageria: ["Kafka", "RabbitMQ"]
+  devops: ["CI/CD com GitHub Actions", "Docker"]
+  dados: ["SQL Server", "Oracle", "PostgreSQL", "Redis", "Data Science (MBA)"]
+  ia: ["GitHub Copilot", "Codex", "Trae IA", "n8n"]
+  frontend: ["Angular", "React", "Ionic", "Capacitor"]
+
+educacao:
+  - "MBA em Data Science and Analytics - USP/Esalq (2021 - 2022)"
+  - "Bacharelado em Ciência da Computação - Universidade do Grande ABC (2015 - 2018)"
+
+certificacoes:
+  - "GitHub Copilot (GH-300) - Microsoft/GitHub"
+  - "Azure AI Fundamentals (AI-900) - Microsoft"
+  - "Azure Data Fundamentals (DP-900) - Microsoft"
+  - "Security, Compliance, and Identity Fundamentals (SC-900) - Microsoft"
+  - "Azure Fundamentals (AZ-900) - Microsoft"
+  - "Foundational C# with Microsoft - Microsoft/FreeCodeCamp"
+  - "GitHub Foundations (GH-900) - Microsoft/GitHub"
+  - "License to Hire (LtH) - Avanade/SocialTalent"
+
+projetos:
+  - nome: "Conecta Paraguai"
+    descricao: "Plataforma full-stack de informações sobre o processo migratório paraguaio, publicada na Google Play."
+    tecnologias: ["Ionic", "Angular", "Capacitor", "Google Cloud Functions", "Firebase", "Firestore", "Mercado Pago API", "Google Play Billing", "GitHub Actions"]
+    link: "https://play.google.com/store/apps/details?id=com.conectaparaguai"
+  - nome: "Automated Irrigation System (IoT)"
+    descricao: "Sistema automatizado de monitoramento de umidade do solo e irrigação com ESP32, Arduino IDE e Firebase Realtime Database, com dashboard Angular."
+    tecnologias: ["ESP32", "Arduino IDE", "Firebase Realtime Database", "Angular"]
+    links:
+      - "https://github.com/AddamReis/irrigation-monitor-app"
+      - "https://github.com/AddamReis/irrigation-esp32"

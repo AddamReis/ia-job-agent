@@ -1,0 +1,48 @@
+"""Configuração compartilhada — reexporta Settings e os blocos usados pelos agentes."""
+from __future__ import annotations
+
+from ..core.config import (
+    AppConfig,
+    ApplicationConfig,
+    ApprovalConfig,
+    BrowserConfig,
+    CompanySuppressionConfig,
+    DeviceConfig,
+    DiscoveryScheduleConfig,
+    EligibilityConfig,
+    GmailConfig,
+    LimitsConfig,
+    LLMConfig,
+    ProfileConfig,
+    ProviderConfig,
+    QualificationConfig,
+    RejectConfig,
+    SearchConfig,
+    Settings,
+    StorageConfig,
+    UnlockSecretConfig,
+    WeightsConfig,
+)
+
+__all__ = [
+    "Settings",
+    "AppConfig",
+    "ProviderConfig",
+    "LLMConfig",
+    "UnlockSecretConfig",
+    "DeviceConfig",
+    "BrowserConfig",
+    "SearchConfig",
+    "DiscoveryScheduleConfig",
+    "WeightsConfig",
+    "RejectConfig",
+    "QualificationConfig",
+    "EligibilityConfig",
+    "CompanySuppressionConfig",
+    "ApplicationConfig",
+    "LimitsConfig",
+    "ApprovalConfig",
+    "GmailConfig",
+    "StorageConfig",
+    "ProfileConfig",
+]

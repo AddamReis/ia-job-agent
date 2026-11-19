@@ -1,0 +1,40 @@
+[project]
+name = "local-ai-job-agent"
+version = "0.1.0"
+description = "Agente local de pesquisa e candidaturas com dispositivo Android real"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "sqlalchemy>=2.1",
+    "typer>=0.27",
+    "rich>=14",
+    "loguru>=0.7",
+    "httpx>=0.28",
+    "openai>=1.0",
+    "pypdf>=6",
+    "pymupdf>=1.28",
+    "PyYAML>=6",
+    "Appium-Python-Client>=5",
+    "playwright>=1.45",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.188",
+    "keyring>=25",
+    "python-dotenv>=1.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9"]
+
+[project.scripts]
+agent = "src.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

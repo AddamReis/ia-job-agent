@@ -1,0 +1,57 @@
+# Gerado a partir do currículo 11/11/2026 + base data/conhecimento.yaml.
+# O robô usa isto para campos objetivos e a base de conhecimento para perguntas descritivas.
+
+personal:
+  full_name: "Addam dos Reis Oliveira"
+  first_name: "Addam"
+  last_name: "dos Reis Oliveira"
+  email: "addamreis@gmail.com"
+  phone: "11953058585"
+  phone_display: "+55 (11) 95305-8585"
+  cpf: ""
+  birth_date: ""
+
+address:
+  street: ""
+  city: "São Paulo"
+  state: "SP"
+  country: "Brasil"
+  postal_code: ""
+
+links:
+  linkedin: "https://www.linkedin.com/in/addamreis"
+  github: "https://github.com/addamreis"
+  portfolio: "https://play.google.com/store/apps/details?id=com.conectaparaguai"
+
+experience:
+  current_title: "Backend Software Engineer / Senior Consultant"
+  current_company: "Avanade"
+  years: 7
+  years_csharp: 7
+
+education:
+  level: "MBA em Data Science and Analytics / Bacharelado em Ciência da Computação"
+  course: "Ciência da Computação"
+  year: 2018
+
+expectations:
+  salary: "A combinar"
+  availability: "Imediata"
+  remote: "Remoto ou híbrido"
+
+documents:
+  resume: "C:/Users/addam/Downloads/Addam dos Reis Oliveira - Software Engineer.pdf"
+
+answers:
+  - match: "(autoriz|concordo|aceito).*(dados|privacidade|termos|politica)"
+    value: true
+  - match: "aceito (receber|compartilhar)|opt.in|newsletter"
+    value: true
+  - match: "pretens[aã]o salarial|sal[aá]rio pretendido|expected salary"
+    value: "A combinar"
+  - match: "disponibilidade|quando (voc[eê] |)pode come[cç]ar|notice period"
+    value: "Imediata"
+  - match: "como (voc[eê] )?soube|onde (voc[eê] )?encontrou|refer[eê]ncia|source"
+    value: "LinkedIn"
+  - match: "j[aá] trabalhou|j[aá] atuou|experi[eê]ncia pr[eé]via|already worked"
+    value: "Sim"

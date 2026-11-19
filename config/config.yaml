@@ -1,0 +1,248 @@
+app:
+  name: "Local AI Job Application Agent"
+  timezone: "America/Sao_Paulo"
+  mode: "assisted"          # assisted | autonomous
+
+llm:
+  # Somente o LLM local do DGX. Sem LM Studio/Ollama nesta maquina.
+  primary: "dgx"
+  fallback: null
+  temperature: 0.1
+  max_retries: 2
+  max_output_tokens: 2048
+  providers:
+    dgx:
+      type: "openai_compatible"
+      base_url: "http://10.10.10.2:8011/v1"
+      model: "qwen3.8-27b-nvfp4"
+      api_key: "vllm"
+      timeout_seconds: 300
+
+device:
+  adb_path: "C:\\Users\\addam\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe"
+  appium_url: "http://127.0.0.1:4723/wd/hub"
+  linkedin_package: "com.linkedin.android"
+  screenshot_policy: "memory_only"   # memory_only | disabled
+  max_scrolls_per_search: 30
+  action_delay_ms: 350
+  use_visible_keyboard: true    # true = digitar tecla a tecla pelo Android
+  allow_easy_apply: true
+  allow_external_portals: true
+  # Senha de desbloqueio NUNCA fica neste arquivo.
+  # Fica no Windows Credential Manager via `agent device --set-unlock`.
+  unlock_secret:
+    store: "keyring"
+    keyring_service: "local-ai-job-agent"
+    keyring_username: "device-screen-unlock"
+
+# Leitura das paginas PUBLICAS do LinkedIn Jobs (sem login/API privada).
+# Usa o Chrome instalado via Playwright. Nenhuma evasao, UA falso ou burla.
+browser:
+  source: "chrome"              # chrome | msedge | "" (Chromium embutido)
+  headless: true
+  timeout_ms: 30000
+  delay_ms: 1200                # pausa conservadora entre navegacoes
+  cdp_url: "http://127.0.0.1:9222"  # perfil logado; nunca abrir outro perfil
+  max_pages_per_query: 1
+  # Nunca usar o celular como fonte de descoberta: somente HTML público.
+  fallback_to_android: false
+  drain_timeout_seconds: 3600
+
+# Serviço isolado de população da base (discovery-agent). Quatro execuções/dia.
+discovery_schedule:
+  timezone: "America/Sao_Paulo"
+  slots: ["10:00", "12:30", "15:00", "18:30"]
+  first_slot: "10:00"
+  # Filtro nativo do LinkedIn permanece 24h; nossa janela interna vai por cima.
+  linkedin_ui_filter: "day"       # day | week
+  first_run_hours: 12             # primeira execução do dia pega a noite anterior
+  regular_hours: 3                # execuções seguintes
+  overlap_buffer_minutes: 60      # cobre execução de 40–60 min
+  use_last_watermark: true
+  auto_widen_time_filter: true    # se o cutoff passar de 24h, usa "week"
+
+search:
+  # Fonte padrao: browser publico. O celular entra so na candidatura apos aprovacao.
+  source: "browser"             # browser | android
+  # LATAM PRIMEIRO, como prioridade explicita. Sobreposicao e medida pelo
+  # dedupe por ID real da vaga. As demais regioes continuam na lista.
+  queries:
+    - "Software Developer Latam"
+    - "Software Developer Latin America"
+    - "Software Engineer Latam"
+    - "Software Engineer Latin America"
+    - "Backend Engineer Latam"
+    - "Backend Engineer Latin America"
+    - ".NET Engineer"
+    - ".NET Developer"
+    - "DotNet Engineer"
+    - "DotNet Developer"
+    - "Software Engineer"
+    - "Software Developer"
+    - "Backend Engineer"
+    - "Backend Developer"
+    - "Full Stack .NET Engineer"
+    - "Full Stack .NET Developer"
+  locations:
+    # Filtros GEOGRAFICOS da URL publica do LinkedIn. "Remote" NAO e local:
+    # e modalidade de trabalho e ja e exigida por remote_only na qualificacao.
+    # LATAM/Latin America sao regioes (filtro nativo), mantidas no topo.
+    - "LATAM"
+    - "Latin America"
+    # Top 10 europeus que mais contratam tech/estrangeiros + Irlanda (Dublin),
+    # incluída a pedido mesmo fora do top 10. Seed em shared/seed.py.
+    - "Germany"
+    - "United Kingdom"
+    - "Netherlands"
+    - "France"
+    - "Switzerland"
+    - "Spain"
+    - "Portugal"
+    - "Sweden"
+    - "Denmark"
+    - "Finland"
+    - "Ireland"
+    # Demais regiões.
+    - "United States"
+    - "Canada"
+    - "Australia"
+    - "New Zealand"
+    - "Brazil"
+  # Descoberta: ate 6h desde a publicacao; sem idade explicita nao entra.
+  recency_hours: 6
+  # So classifica como EXPIRED apos 24h (auditoria/historico, fase de testes).
+  expired_after_hours: 24
+  require_explicit_recency: true
+  # Moedas elegíveis: so USD/EUR. Salario nao entra no score, mas a moeda
+  # filtra: BRL/outras reprovam; Brasil/PT-BR exige USD explicito.
+  currencies: ["USD", "EUR"]
+  require_salary: false   # legado: nao usar para ligar/desligar o filtro de moeda
+  # 100% remoto. Hibrido/presencial sao rejeitados.
+  remote_only: true
+  # Vaga nacional (ex.: empresa em SP) e permitida se for remota e pagar USD/EUR.
+  allow_national_remote: true
+  national_countries: ["Brazil"]
+  max_jobs_per_query: 25
+
+qualification:
+  min_score: 70
+  # Exige ao menos esta fração das tecnologias pedidas na descrição.
+  min_technology_match: 0.5
+  # Salario NAO entra no score (e informativo). Os 15 pontos antes de
+  # compensation foram para technical/experience/international.
+  weights:
+    technical: 35
+    seniority: 20
+    experience: 25
+    international: 15
+    language: 5
+  reject:
+    work_authorization_required: true
+    onsite_in_unsupported_country: true
+    unsupported_language: true
+    non_remote: true
+    # Moeda e filtro: USD/EUR; nacional/PT-BR sem prova explicita reprova.
+    salary_currency_mismatch: true
+    stale_posting: true
+    technology_mismatch: true
+    # Visto/idioma/residência barram a candidatura (com os detalhes salvos na vaga).
+    eligibility_restriction: true
+    # Cargo explícito de tech lead/manager não é alvo; mentoria não conta.
+    explicit_leadership_role: true
+    # Só barra se a vaga EXIGIR setor ausente; diferencial nunca barra.
+    missing_required_domain_experience: true
+
+# Barreiras do candidato — usadas na análise de cada vaga. Nunca inventar aqui.
+eligibility:
+  # So a IDENTIDADE do idioma importa. Nivel (fluent/C1/C2/native) nunca barra:
+  # ingles tecnico e suficiente. Frances/alemao/outros barram.
+  accepted_languages: ["english", "portuguese", "spanish"]
+  # Legado (nao usado para rejeitar): apenas referencia informativa.
+  languages:
+    english: "intermediate"
+    portuguese: "native"
+    spanish: "intermediate"
+  # Países onde você pode trabalhar sem visto/sponsorship.
+  work_authorization_countries: ["Brazil"]
+  visa_sponsorship_available: false
+  # Onde você mora/pode morar (usado se a vaga exigir residência).
+  residence_countries: ["Brazil"]
+  residence_regions: ["Brazil"]
+  # Se a descrição for omissa, consulta o link público da empresa.
+  enrich_from_company_page: true
+
+# Supressão TEMPORARIA de empresas (NAO e blacklist e NAO filtra a busca).
+# Só restrições de localizacao/residencia/visto geram flag, nunca tecnico.
+# Antes de marcar, o agente confirma o padrao em outras vagas da empresa.
+company_suppression:
+  enabled: true
+  days: 30
+  sample_jobs: 3
+  min_matching: 2
+  delay_ms: 1200
+
+# Ordem de execução: simplificada -> portais conhecidos -> sites externos.
+# known_portals = sites onde VOCÊ já tem cadastro ativo (BairesDev/Strider são exemplos).
+application:
+  known_portals: ["BairesDev", "Strider"]
+  channel_priority: ["easy_apply", "known_portal", "external_portal"]
+  # Prioridade geografica (antes do canal): America do Norte > AU > NZ > Europa > Brasil.
+  region_priority: ["latam", "americas_north", "australia", "new_zealand", "europe", "brazil", "other"]
+  require_success_feedback: true
+
+limits:
+  max_applications_per_day: 10
+  max_applications_per_run: 10
+  max_hours_per_run: 4
+
+approval:
+  before_submit: true
+  always_human:
+    - legal_terms
+    - work_authorization
+    - visa_sponsorship
+    - authentication
+    - captcha_mfa
+    - profile_changes
+    - salary_expectation
+
+gmail:
+  enabled: true
+  scopes:
+    - "https://www.googleapis.com/auth/gmail.readonly"
+    - "https://www.googleapis.com/auth/gmail.send"
+  alert_recipient: "me"
+  # Resumo de cada execução + UM lembrete consolidado de pendências/erros.
+  send_run_summary: true
+  send_human_reminder: true
+  # O lembrete sai no primeiro job do dia a partir deste horário (hora local).
+  reminder_hour: 18
+  # Prazo mais próximo que isso é destacado, mas não muda a cadência diária.
+  reminder_before_due_hours: 24
+  credentials_file: "config/gmail_oauth.json"
+  keyring_service: "local-ai-job-agent"
+  keyring_username: "gmail-token"
+  max_results: 25
+
+storage:
+  database: "data/agent.db"
+  log_dir: "data/logs"
+  control_file: "data/control.json"
+
+profile:
+  cv_path: "C:\\Users\\addam\\Downloads\\Addam dos Reis Oliveira - Software Engineer.pdf"
+  legacy_profile: "config/profile.legacy.yaml"
+  legacy_knowledge: "data/conhecimento.legacy.yaml"
+  # Doc local opcional de domínios em tecnologias para perguntas de formulário.
+  tech_domains_doc: ""
+  # Setores com experiencia comprovada no CV. Usados somente para checar
+  # exigencias explicitas da vaga — nao limitam os setores de interesse.
+  domain_experience:
+    - "software development"
+    - "enterprise software"
+    - "automotive sales"
+    - "vehicle after-sales"
+    - "insurance"
+    - "reinsurance"
+    - "contracts"
+    - "agribusiness"

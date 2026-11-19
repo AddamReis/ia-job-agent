@@ -1,0 +1,18 @@
+# Classificação agêntica — por enquanto permanece local (revisão em andamento).
+# Perfil "manual" evita subir junto com o discovery. Quando migrar, rode no DGX:
+#   docker compose -f deploy/classification.yaml --profile dgx run --rm classification
+services:
+  classification:
+    image: ia-job-agent:latest
+    container_name: ia-job-agent-classification
+    profiles: ["dgx", "manual"]
+    working_dir: /app
+    entrypoint: []
+    command: ["python", "-m", "src.cli", "reclassify", "--statuses", "DISCOVERED"]
+    environment:
+      TZ: America/Sao_Paulo
+      # Endpoint do Qwen no mesmo servidor; sem fallback.
+      LLM_BASE_URL: http://10.10.10.2:8011/v1
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config:ro

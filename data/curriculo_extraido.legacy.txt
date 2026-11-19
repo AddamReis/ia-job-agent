@@ -1,0 +1,80 @@
+Addam dos Reis Oliveira
+ LinkedIn  |  
+ +55 (11) 95305-8585 | 
+  addamreis@gmail.com |  
+  GitHub
+Skills ____________________________________________________________________________________________
+•    .NET 8, C#, Microservices, Distributed Systems, Restful APIs, Clean Architecture, DDD, CQRS, Serverless, Angular.
+•    AWS (Lambda, SQS, SNS, DynamoDB), GCP (Functions, Firebase), Kafka, RabbitMQ, CI/CD Pipelines (GitHub Actions), Docker
+•    SQL Server, Oracle, PostgreSQL, Redis, Data Science (MBA), AI Tools (GitHub Copilot, Codex, Trae IA, n8n)
+•    Languages: Portuguese (Native), English (Intermediate), Spanish (Intermediate)
+Experience _______________________________________________________________________________________
+Backend Software Engineer Avanade São Paulo, Brazil 
+(Remote)
+11/2023 – Current
+Avanade is a global leader in digital services and solutions within the Microsoft ecosystem. I serve as a Senior Consultant for large-scale 
+financial and credit institutions, architecting business-critical solutions.
+•   Classification Engine: Led the end-to-end design and implementation of a generic, parameter-driven rule engine for automated customer 
+complaint triage. Result: Slashed critical analysis time from 60 to fewer than 15 minutes (75% reduction in analysis time) and eliminated 
+operational collisions.
+•   Financial Automation (INSS): Architected an automated deduction workflow for social security benefits, integrating government data 
+ingestion and internal debt validation. Result: Mitigated operational risk and financial losses by replacing manual high-risk processes with a 
+precise, automated collection system 
+•  Reinsurance Modernization: Managed complex API integrations and implemented event-driven features to streamline contract lifecycle 
+management. Result: Achieved a 70% reduction in manual errors and enhanced data consistency across workflows.
+Tech Stack: .NET, C#, Angular, AWS (Lambda, SQS/SNS, DynamoDB), Kafka, PostgreSQL, SQL Server, xUnit, BFF Pattern, Microservices, 
+Serverless. 
+Backend Software Engineer Aliare Goiás, Brazil 
+(Remote)
+01/2023 - 10/2023
+Aliare is a major technology provider for the agribusiness sector. I spearheaded the development of a centralized Identity and Access 
+Management (IAM) platform, serving as the primary technical authority.
+•    Identity Architecture: Improvements and maintenance of a robust SSO solution using IdentityServer4 and OAuth2, enabling granular 
+role-based control across multiple ecosystem applications.
+•    Performance Optimization: Solved token bloat issues in complex permission scenarios by engineering a custom Gzip + Base64 
+compression strategy. Result: Reduced token size by 90%, ensuring efficient data transfer without payload integrity loss.
+•   Event-Driven Integration: Orchestrated reliable synchronization between the IAM Hub and downstream applications using Kafka and 
+RabbitMQ.
+•   Technical Mentor: Managed the full lifecycle including code reviews, technical debt management, and strategic task delegation.
+Tech Stack: .NET 8, IdentityServer4, MVC, OAuth2, Kafka, RabbitMQ, PostgreSQL, SQL Server, Hangfire, Microservices.
+Full Stack Engineer Autoware Soluções São Paulo, Brazil
+(Hybrid)
+05/2019 – 01/2023
+Autoware provides specialized software for the automotive sector. I played a key role in evolving an after-sales ecosystem for major 
+Brazilian and international automotive brands.
+•   Warranty Module: Spearheaded the architecture of a new warranty module that replaced legacy third-party systems, centralizing the 
+workflow within the company's ecosystem.
+•    KPI System (Argentina): Led the restructuring of a Performance Indicator system for the Argentine dealership network, implementing 
+complex business logic for daily and weekly benchmarking.
+•   Reporting Automation: Developed a dynamic engine for Excel using OpenXML SDK to transform raw data into automated visual insights. 
+Result: Eliminated manual spreadsheet assembly and reduced client reliance on external reporting tools.
+Tech Stack: C#, .NET Core/Framework, AspNet, React, Oracle, SQL Server, React, OpenXML SDK, Windows Services.
+
+Addam dos Reis Oliveira
+ LinkedIn  |  
+ +55 (11) 95305-8585 | 
+  addamreis@gmail.com |  
+  GitHub
+Projects __________________________________________________________________________________________
+Conecta Paraguai (Mobile App) Google Play
+Developed a full-stack informational platform for the Paraguayan immigration process using Ionic, Angular, and Capacitor.
+•    Implemented a serverless backend with Google Functions, Cron Jobs, and Firebase (Firestore/Storage).
+•    Integrated payment gateways (Mercado Pago API) and Google Play Billing for monetization.
+•    Continuous Integration/Deployment Pipeline Integration with deploy to Google Play (by Github Actions).
+•    Feel free to check out the full project published on Google Play.
+Automated Irrigation System (IoT) Github
+Engineered an automated soil moisture monitoring and irrigation system using ESP32, Arduino IDE, and Firebase Realtime Database.
+•    Built a dedicated Angular dashboard for real-time monitoring and control.
+•    Feel free to check out the full project published (Front-end and Arduino) on Github.
+Education _______________________________________________________________________________________
+•    MBA in Data Science and Analytics – USP/Esalq (2021 – 2022)
+•    Bachelor’s degree in Computer Science – Universidade do Grande ABC (2015 – 2018)
+Certifications ____________________________________________________________________________________
+•    GitHub Copilot (GH-300) – Microsoft/GitHub
+•    Azure AI Fundamentals (AI-900) – Microsoft
+•    Azure Data Fundamentals (DP-900) – Microsoft
+•    Security, Compliance, and Identity Fundamentals (SC-900) – Microsoft
+•    Azure Fundamentals (AZ-900) – Microsoft
+•    Foundational C# with Microsoft – Microsoft/FreeCodeCamp
+•    GitHub Foundations (GH-900) – Microsoft/GitHub
+•    License to Hire (LtH) – Avanade/SocialTalent

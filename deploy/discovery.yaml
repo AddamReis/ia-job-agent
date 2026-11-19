@@ -1,0 +1,17 @@
+# Serviço de população da base — roda no DGX Spark.
+# Quatro slots/dia configurados em config/config.yaml (10:00/12:30/15:00/18:30).
+services:
+  discovery:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ia-job-agent:latest
+    container_name: ia-job-agent-discovery
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "-m", "src.cli", "discovery-serve"]
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config:ro

@@ -1,0 +1,235 @@
+app:
+  name: "Local AI Job Application Agent"
+  timezone: "America/Sao_Paulo"
+  mode: "assisted"          # assisted | autonomous
+
+llm:
+  # Somente o DGX. Nenhum LM Studio/Ollama/fallback nesta máquina.
+  primary: "dgx"
+  fallback: null
+  temperature: 0.1
+  max_retries: 2
+  max_output_tokens: 2048
+  providers:
+    dgx:
+      type: "openai_compatible"
+      base_url: "http://10.10.10.2:8011/v1"
+      model: "qwen3.8-27b-nvfp4"
+      api_key: "vllm"
+      timeout_seconds: 300
+
+device:
+  adb_path: "C:\\Users\\addam\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe"
+  appium_url: "http://127.0.0.1:4723/wd/hub"
+  linkedin_package: "com.linkedin.android"
+  screenshot_policy: "memory_only"   # memory_only | disabled
+  max_scrolls_per_search: 30
+  action_delay_ms: 350
+  use_visible_keyboard: true    # true = digitar tecla a tecla pelo Android
+  allow_easy_apply: true
+  allow_external_portals: true
+  # Senha de desbloqueio NUNCA fica neste arquivo.
+  # Fica no Windows Credential Manager via `agent device --set-unlock`.
+  unlock_secret:
+    store: "keyring"
+    keyring_service: "local-ai-job-agent"
+    keyring_username: "device-screen-unlock"
+
+# Leitura das paginas PUBLICAS do LinkedIn Jobs (sem login/API privada).
+browser:
+  source: "chrome"              # chrome | msedge | "" (Chromium embutido)
+  headless: true
+  timeout_ms: 30000
+  delay_ms: 1200
+  cdp_url: "http://127.0.0.1:9222"  # perfil logado; nunca abrir outro perfil
+  max_pages_per_query: 1
+  fallback_to_android: false
+  drain_timeout_seconds: 3600
+
+discovery_schedule:
+  timezone: "America/Sao_Paulo"
+  slots: ["10:00", "12:30", "15:00", "18:30"]
+  first_slot: "10:00"
+  linkedin_ui_filter: "day"
+  first_run_hours: 12
+  regular_hours: 3
+  overlap_buffer_minutes: 60
+  use_last_watermark: true
+  auto_widen_time_filter: true
+
+search:
+  # Fonte padrao: browser publico. Celular so na candidatura apos aprovacao.
+  source: "browser"             # browser | android
+  # LATAM primeiro; sobreposicao medida pelo dedupe por ID real da vaga.
+  queries:
+    - "Software Developer Latam"
+    - "Software Developer Latin America"
+    - "Software Engineer Latam"
+    - "Software Engineer Latin America"
+    - "Backend Engineer Latam"
+    - "Backend Engineer Latin America"
+    - ".NET Engineer"
+    - ".NET Developer"
+    - "DotNet Engineer"
+    - "DotNet Developer"
+    - "Software Engineer"
+    - "Software Developer"
+    - "Backend Engineer"
+    - "Backend Developer"
+    - "Full Stack .NET Engineer"
+    - "Full Stack .NET Developer"
+  # Apenas filtros geograficos: "Remote" e modalidade, nao localizacao.
+  locations:
+    - "LATAM"
+    - "Latin America"
+    - "Germany"
+    - "United Kingdom"
+    - "Netherlands"
+    - "Ireland"
+    - "Switzerland"
+    - "Sweden"
+    - "France"
+    - "Spain"
+    - "Portugal"
+    - "Italy"
+    - "Poland"
+    - "Denmark"
+    - "Norway"
+    - "Finland"
+    - "Austria"
+    - "Belgium"
+    - "Luxembourg"
+    - "Czechia"
+    - "Hungary"
+    - "Romania"
+    - "Greece"
+    - "Cyprus"
+    - "Malta"
+    - "Iceland"
+    - "Estonia"
+    - "Latvia"
+    - "Lithuania"
+    - "Slovenia"
+    - "Slovakia"
+    - "Croatia"
+    - "Bulgaria"
+    - "Serbia"
+    - "Ukraine"
+    - "Turkey"
+    - "Russia"
+    - "Belarus"
+    - "Albania"
+    - "Bosnia and Herzegovina"
+    - "Montenegro"
+    - "North Macedonia"
+    - "Moldova"
+    - "Kosovo"
+    - "Georgia"
+    - "Armenia"
+    - "Azerbaijan"
+    - "Andorra"
+    - "Liechtenstein"
+    - "Monaco"
+    - "San Marino"
+    - "Vatican City"
+    - "United States"
+    - "Canada"
+    - "Australia"
+    - "New Zealand"
+    - "Brazil"
+  # Descoberta: ate 6h desde a publicacao; sem idade explicita nao entra.
+  recency_hours: 6
+  # So classifica como EXPIRED apos 24h (auditoria/historico, fase de testes).
+  expired_after_hours: 24
+  require_explicit_recency: true
+  # Moedas elegíveis: so USD/EUR. Salario nao entra no score, mas a moeda
+  # filtra: BRL/outras reprovam; Brasil/PT-BR exige USD explicito.
+  currencies: ["USD", "EUR"]
+  require_salary: false   # legado: nao usar para ligar/desligar o filtro de moeda
+  # 100% remoto. Hibrido/presencial sao rejeitados.
+  remote_only: true
+  # Vaga nacional (ex.: empresa em SP) e permitida se for remota e pagar USD/EUR.
+  allow_national_remote: true
+  national_countries: ["Brazil"]
+  max_jobs_per_query: 25
+
+qualification:
+  min_score: 70
+  min_technology_match: 0.5
+  # Salario e informativo: NAO entra no score.
+  weights:
+    technical: 35
+    seniority: 20
+    experience: 25
+    international: 15
+    language: 5
+  reject:
+    work_authorization_required: true
+    onsite_in_unsupported_country: true
+    unsupported_language: true
+    non_remote: true
+    # Moeda e filtro: USD/EUR; nacional/PT-BR sem prova explicita reprova.
+    salary_currency_mismatch: true
+    stale_posting: true
+    technology_mismatch: true
+
+# Apenas a identidade do idioma importa; nivel nunca barra.
+eligibility:
+  accepted_languages: ["english", "portuguese", "spanish"]
+
+# Supressao temporaria: so localizacao/residencia/visto, nunca requisito tecnico.
+company_suppression:
+  enabled: true
+  days: 30
+  sample_jobs: 3
+  min_matching: 2
+  delay_ms: 1200
+
+application:
+  known_portals: ["BairesDev", "Strider"]
+  channel_priority: ["easy_apply", "known_portal", "external_portal"]
+  # Prioridade geografica (antes do canal): America do Norte > AU > NZ > Europa > Brasil.
+  region_priority: ["latam", "americas_north", "australia", "new_zealand", "europe", "brazil", "other"]
+  require_success_feedback: true
+
+limits:
+  max_applications_per_day: 10
+  max_applications_per_run: 10
+  max_hours_per_run: 4
+
+approval:
+  before_submit: true
+  always_human:
+    - legal_terms
+    - work_authorization
+    - visa_sponsorship
+    - authentication
+    - captcha_mfa
+    - profile_changes
+    - salary_expectation
+
+gmail:
+  enabled: true
+  scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
+  alert_recipient: "me"
+  # Resumo de cada execução + UM lembrete consolidado de pendências/erros.
+  send_run_summary: true
+  send_human_reminder: true
+  # Primeiro job do dia a partir deste horário envia o lembrete (hora local).
+  reminder_hour: 18
+  reminder_before_due_hours: 24
+  credentials_file: "config/gmail_oauth.json"
+  keyring_service: "local-ai-job-agent"
+  keyring_username: "gmail-token"
+  max_results: 25
+
+storage:
+  database: "data/agent.db"
+  log_dir: "data/logs"
+  control_file: "data/control.json"
+
+profile:
+  cv_path: "C:\\Users\\addam\\Downloads\\Addam dos Reis Oliveira - Software Engineer.pdf"
+  legacy_profile: "config/profile.legacy.yaml"
+  legacy_knowledge: "data/conhecimento.legacy.yaml"
+  tech_domains_doc: ""
