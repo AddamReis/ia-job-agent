@@ -304,9 +304,14 @@ class Settings(BaseModel):
 
     @classmethod
     def load(cls, root: Path | None = None, filename: str = "config.yaml") -> "Settings":
-        root = (root or Path(__file__).resolve().parents[2]).resolve()
+        config_dir = os.getenv("AI_JOB_CONFIG_DIR")
+        root = (
+            Path(config_dir)
+            if config_dir
+            else (root or Path(__file__).resolve().parents[2])
+        ).resolve()
         path = root / "config" / filename
-        if not path.exists():
+        if not path.exists() and not config_dir:
             # Quando o pacote é instalado via pip, ``__file__`` fica em
             # site-packages. O working directory do container (/app) é a
             # fonte correta da configuração.

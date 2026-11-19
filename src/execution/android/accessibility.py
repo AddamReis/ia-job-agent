@@ -61,12 +61,18 @@ def flatten(elements: list[UIElement]) -> list[UIElement]:
     return result
 
 
-def parse_posted(raw: str) -> tuple[datetime | None, str]:
-    """Interpreta recência sem presumir precisão inexistente."""
+def parse_posted(
+    raw: str, now: datetime | None = None
+) -> tuple[datetime | None, str]:
+    """Interpreta recência sem presumir precisão inexistente.
+
+    ``now`` permite congelar a âncora da execução (discovery-agent); sem ele,
+    mantém o comportamento legado usado pelos testes e pela leitura avulsa.
+    """
     value = raw.strip().lower()
     if not value:
         return None, "unknown"
-    now = datetime.now()
+    now = now or datetime.now()
     if "just now" in value or "agora" in value:
         return now, "hour"
 

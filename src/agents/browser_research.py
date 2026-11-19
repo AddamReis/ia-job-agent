@@ -80,11 +80,12 @@ class BrowserResearchAgent:
         marker: str,
         query: str = "",
         location: str = "",
+        reference_time: datetime | None = None,
     ) -> JobOpportunity | None:
         job_id = extract_job_id(card.get("url", ""))
         if not job_id:
             return None
-        posted_at, precision = parse_posted(age)
+        posted_at, precision = parse_posted(age, reference_time)
         if posted_at is None and self.settings.search.require_explicit_recency:
             return None
         return JobOpportunity(
@@ -108,7 +109,9 @@ class BrowserResearchAgent:
             search_location=location,
         )
 
-    def _enrich_description(self, job: JobOpportunity) -> bool:
+    def _enrich_description(
+        self, job: JobOpportunity, reference_time: datetime | None = None
+    ) -> bool:
         """Carrega a descrição pública. Retorna False se não houver texto."""
         try:
             detail = self.browser.job_page(job.url)
@@ -121,7 +124,7 @@ class BrowserResearchAgent:
             return False
         detail_age = extract_detail_posted(detail)
         if detail_age:
-            posted_at, precision = parse_posted(detail_age)
+            posted_at, precision = parse_posted(detail_age, reference_time)
             if posted_at is not None:
                 job.posted_raw = detail_age
                 job.posted_at = posted_at
@@ -218,6 +221,7 @@ class BrowserResearchAgent:
                         markers.get(card_id, ""),
                         query=query,
                         location=location,
+                        reference_time=reference,
                     )
                     if job is None:
                         continue  # sem ID real ou sem idade explícita: rejeitada
@@ -277,7 +281,7 @@ class BrowserResearchAgent:
                 job.status = JobStatus.EXPIRED
                 self.repo.upsert_job(job)
                 continue
-            self._enrich_description(job)
+            self._enrich_description(job, reference)
             # Filtro remoto na própria fonte pública: sem descrição ou sem
             # evidência de 100% remoto, a vaga nem entra no banco.
             if not is_remote_public(job.title, job.location, job.description):

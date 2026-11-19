@@ -285,7 +285,11 @@ class LinkedInPublicBrowser:
         self._page.set_default_timeout(cfg.timeout_ms)
 
     def _get(
-        self, url: str, wait_selector: str | None = None, check_block: bool = True
+        self,
+        url: str,
+        wait_selector: str | None = None,
+        check_block: bool = True,
+        wait_timeout_ms: int | None = None,
     ) -> str:
         self._ensure()
         cfg = self.settings.browser
@@ -293,7 +297,13 @@ class LinkedInPublicBrowser:
         self._page.goto(url, wait_until="domcontentloaded", timeout=cfg.timeout_ms)
         if wait_selector:
             try:
-                self._page.wait_for_selector(wait_selector, timeout=cfg.timeout_ms)
+                # ``script`` e elementos de descrição podem existir mas estar
+                # ocultos; esperar "visible" custava o timeout inteiro por página.
+                self._page.wait_for_selector(
+                    wait_selector,
+                    state="attached",
+                    timeout=wait_timeout_ms or cfg.timeout_ms,
+                )
             except Exception:
                 pass
         content = self._page.content() or ""
@@ -311,7 +321,10 @@ class LinkedInPublicBrowser:
         )
 
     def job_page(self, url: str) -> str:
-        return self._get(url, "div.show-more-less-html__markup")
+        # Nem toda vaga pública expõe esse seletor; esperar 30s por ele
+        # transformava cada detalhe em uma pausa longa. 3s bastam para o HTML
+        # já carregado pelo domcontentloaded.
+        return self._get(url, "div.show-more-less-html__markup", wait_timeout_ms=3000)
 
     def public_page(self, url: str) -> str:
         """Página pública externa (site da empresa), sem detecção do LinkedIn."""

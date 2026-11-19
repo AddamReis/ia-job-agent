@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from src.agents.research import _is_recent
 from src.core.config import Settings
+from src.models.domain import JobOpportunity
 from src.shared.discovery_window import compute_window, normalize_slot
 
 TZ = timezone(timedelta(hours=-3))
@@ -64,6 +66,18 @@ def test_reference_is_frozen_for_the_whole_execution() -> None:
 
     assert first.reference_time == second.reference_time
     assert first.cutoff == second.cutoff
+
+
+def test_recent_accepts_naive_posted_with_aware_cutoff() -> None:
+    job = JobOpportunity(
+        title="Dev",
+        company="X",
+        external_id="1",
+        posted_at=NOW.replace(tzinfo=None) - timedelta(hours=1),
+    )
+    cutoff = NOW - timedelta(hours=3)
+
+    assert _is_recent(job, cutoff, require_explicit=True) is True
 
 
 def test_auto_slot() -> None:

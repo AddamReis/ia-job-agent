@@ -45,5 +45,17 @@ Edições feitas pelo operador no JSON do portal **nunca** são sobrescritas.
 ## CI/CD
 
 `.github/workflows/deploy-discovery.yml` atualiza o robô no DGX Spark a cada push
-em `main`. Segredos necessários: `DGX_HOST`, `DGX_USER`, `DGX_SSH_KEY`,
-`DGX_DEPLOY_PATH`.
+em `main`. Como o Spark está na LAN (10.10.10.2), o job usa um **runner
+self-hosted** (`dgx-spark`, instalado em `~/actions-runner`), não um runner
+hospedado. O workflow sincroniza o código com `rsync` preservando `data/` e
+roda `docker compose -f deploy/discovery.yaml up -d --build`.
+
+Variáveis de ambiente úteis:
+
+- `AI_JOB_CONFIG_DIR` — raiz alternativa de `config/config.yaml` (usada em testes
+  de fumaça isolados, sem tocar no banco de produção).
+- `AI_JOB_BROWSER_SOURCE` — `""` usa o Chromium embutido no container; o Chrome
+  logado continua exclusivo do apply-agent local.
+
+Uma varredura completa (16 termos × 18 localidades) leva cerca de 1h no Spark,
+com `delay_ms: 1200` e seletores aguardados no estado `attached`.

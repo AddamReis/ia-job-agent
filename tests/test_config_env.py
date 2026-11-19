@@ -19,6 +19,20 @@ def test_browser_source_can_be_overridden_for_dgx(tmp_path: Path, monkeypatch) -
     assert settings.browser.source == ""
 
 
+def test_config_dir_can_be_overridden_for_smoke_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_dir = tmp_path / "smoke" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text("app:\n  name: Smoke\n", encoding="utf-8")
+    monkeypatch.setenv("AI_JOB_CONFIG_DIR", str(tmp_path / "smoke"))
+    monkeypatch.delenv("AI_JOB_BROWSER_SOURCE", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.app.name == "Smoke"
+
+
 def test_load_falls_back_to_working_directory(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()

@@ -13,10 +13,21 @@ from ..storage.database import Repository
 
 
 def _is_recent(job: JobOpportunity, cutoff: datetime, require_explicit: bool) -> bool:
-    """Só aceita idade explícita dentro da janela configurada."""
+    """Só aceita idade explícita dentro da janela configurada.
+
+    O discovery usa uma âncora com timezone (America/Sao_Paulo), enquanto o
+    ``parse_posted`` produz datetimes locais ingênuos. Normaliza antes de
+    comparar para não misturar valores aware/naive na mesma janela.
+    """
     if job.posted_at is None:
         return not require_explicit
-    return job.posted_at >= cutoff
+    posted = job.posted_at
+    limit = cutoff
+    if posted.tzinfo is None and limit.tzinfo is not None:
+        limit = limit.replace(tzinfo=None)
+    elif posted.tzinfo is not None and limit.tzinfo is None:
+        posted = posted.replace(tzinfo=None)
+    return posted >= limit
 
 
 def _newest_first(jobs: list[JobOpportunity]) -> list[JobOpportunity]:
