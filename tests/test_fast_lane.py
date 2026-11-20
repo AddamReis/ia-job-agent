@@ -19,7 +19,7 @@ class StubRepo:
     @staticmethod
     def normalize_company(name: str) -> str:
         return " ".join(
-            (name or "").lower().replace(" LLC", "").replace(" S/A", "").split()
+            (name or "").lower().replace(" llc", "").replace(" s/a", "").split()
         )
 
     def get_company_by_name(self, name: str) -> Company | None:
@@ -132,6 +132,13 @@ def test_foreign_language_requirement_is_rejected() -> None:
 def test_company_must_be_trusted_portal() -> None:
     with pytest.raises(ValueError, match="não é portal confiável"):
         _agent([], trusted=False).load_config()
+
+
+def test_company_suffix_is_normalized_after_lowercase() -> None:
+    from src.storage.database import Repository
+
+    assert Repository.normalize_company("BairesDev LLC") == "bairesdev"
+    assert Repository.normalize_company("BairesDev S/A") == "bairesdev"
 
 
 def test_run_filters_by_company_and_counts_verdicts() -> None:

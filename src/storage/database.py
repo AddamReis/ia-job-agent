@@ -492,7 +492,9 @@ class Repository:
     # ---- empresas ----
     @staticmethod
     def normalize_company(name: str) -> str:
-        return " ".join((name or "").lower().replace(" LLC", "").replace(" S/A", "").split())
+        # Sufixos são removidos DEPOIS de minúsculas: " LLC" maiúsculo nunca
+        # casaria com "bairesdev llc" e a empresa virava duas entidades.
+        return " ".join((name or "").lower().replace(" llc", "").replace(" s/a", "").split())
 
     def upsert_company(self, company: Company) -> Company:
         company.name_normalized = company.name_normalized or self.normalize_company(company.name)
