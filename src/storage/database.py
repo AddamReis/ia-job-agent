@@ -368,6 +368,11 @@ class Repository:
                         setattr(current, field, getattr(job, field))
                     # A primeira execução que descobriu a vaga é a dona do trace.
                     current.trace_id = current.trace_id or job.trace_id
+                    # O mesmo vale para o termo/localidade: a vaga pode reaparecer
+                    # em várias queries da mesma rodada, mas a origem registrada
+                    # deve ser a da PRIMEIRA descoberta, não a do último reencontro.
+                    current.search_query = current.search_query or job.search_query
+                    current.search_location = current.search_location or job.search_location
                     current.company_id = job.company_id or current.company_id
                     current.dedupe_hash = job.dedupe_hash
                     existing.trace_id = current.trace_id

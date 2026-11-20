@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -34,6 +35,54 @@ from ..storage.database import Repository
 from .research import _is_recent, _newest_first
 
 
+@dataclass(frozen=True)
+class QueryYield:
+    """Contribuição marginal de um termo dentro de uma execução.
+
+    ``new`` já desconta duplicatas: vem do ``repo.upsert_job()``, que retorna
+    False para vagas já presentes (inclusive as encontradas por queries
+    anteriores da mesma rodada). ``cumulative`` é o total de vagas novas até
+    esta query, em ordem de execução — permite ver quando um termo passa a
+    contribuir apenas com o que os anteriores já cobriram.
+    """
+
+    query: str
+    query_index: int
+    query_total: int
+    found: int
+    eligible: int
+    discarded: dict[str, int]
+    new: int
+    cumulative: int
+
+    @property
+    def new_ratio(self) -> float:
+        """Fração do retorno bruto que era efetivamente nova."""
+        return round(self.new / self.found, 4) if self.found else 0.0
+
+    def as_log(self) -> dict[str, object]:
+        return {
+            "query": self.query,
+            "query_index": self.query_index,
+            "query_total": self.query_total,
+            "found": self.found,
+            "eligible": self.eligible,
+            "discarded": self.discarded,
+            "new": self.new,
+            "cumulative": self.cumulative,
+            "new_ratio": self.new_ratio,
+        }
+
+
+def yield_ranking(yields: list[QueryYield]) -> list[dict[str, object]]:
+    """Ordena termos por vagas novas, desempatando pela ordem de execução."""
+    ordered = sorted(yields, key=lambda item: (-item.new, item.query_index))
+    return [
+        {"position": position, **item.as_log()}
+        for position, item in enumerate(ordered, start=1)
+    ]
+
+
 class BrowserResearchAgent:
     def __init__(
         self,
@@ -47,6 +96,7 @@ class BrowserResearchAgent:
         self.settings = settings
         self.bus = bus
         self.trace_id = ""
+        self.last_yields: list[QueryYield] = []
         self._status_path = Path(settings.resolve(settings.storage.control_file)).with_name(
             "status.json"
         )
@@ -157,7 +207,7 @@ class BrowserResearchAgent:
         reference_time: datetime | None = None,
         cutoff: datetime | None = None,
         time_filter: str = "day",
-    ) -> int:
+    ) -> QueryYield:
         """Persista apenas vagas com idade explícita dentro da janela configurada.
 
         Emite progresso no início de cada termo e após cada localidade, além de
@@ -322,14 +372,21 @@ class BrowserResearchAgent:
                     precision=job.posted_precision,
                     trace_id=job.trace_id,
                 )
-        log_event(
-            "search_finished",
-            query_length=len(query),
+        result = QueryYield(
+            query=query,
+            query_index=query_index,
+            query_total=query_total,
             found=len(found),
             eligible=len(eligible),
             discarded=discarded,
             new=new_count,
+            cumulative=saved_total + new_count,
+        )
+        log_event(
+            "search_finished",
+            query_length=len(query),
             source="browser",
+            **result.as_log(),
         )
         self._publish_status(
             query_index=query_index,
@@ -343,9 +400,9 @@ class BrowserResearchAgent:
             found_unique=len(found),
             recent_unique=len(eligible),
             discarded=discarded,
-            new_saved=saved_total + new_count,
+            new_saved=result.cumulative,
         )
-        return new_count
+        return result
 
     def run(
         self,
@@ -355,10 +412,11 @@ class BrowserResearchAgent:
         time_filter: str = "day",
     ) -> int:
         queries = self.settings.search.queries
+        self.last_yields = []
         total = 0
         try:
             for index, query in enumerate(queries, start=1):
-                found = self.search(
+                result = self.search(
                     query,
                     index,
                     len(queries),
@@ -367,16 +425,29 @@ class BrowserResearchAgent:
                     cutoff=cutoff,
                     time_filter=time_filter,
                 )
-                total += found
+                self.last_yields.append(result)
+                total = result.cumulative
                 if self.bus:
                     self.bus.emit(
                         "search.progress",
                         current=index,
                         total=len(queries),
-                        new=found,
+                        new=result.new,
                         cumulative=total,
                         trace_id=self.trace_id,
                     )
         finally:
+            if self.last_yields:
+                # Ranking por contribuição marginal: mostra quais termos ainda
+                # trazem vagas que os anteriores não cobriram, e quais só
+                # repetem o que já estava no banco.
+                log_event(
+                    "query_yield_ranking",
+                    trace_id=self.trace_id,
+                    queries_total=len(queries),
+                    queries_executed=len(self.last_yields),
+                    total_new=total,
+                    ranking=yield_ranking(self.last_yields),
+                )
             self.browser.close()
         return total

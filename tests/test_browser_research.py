@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.agents.browser_research import BrowserResearchAgent
+from src.agents.browser_research import BrowserResearchAgent, QueryYield, yield_ranking
 from src.agents.qualification import classify_channel
 from src.core.config import Settings
 from src.core.events import EventBus
@@ -176,6 +176,70 @@ def test_old_jobs_are_not_saved_as_expired(tmp_path: Path) -> None:
 
     assert agent.run() == 0
     assert repo.saved == []
+
+
+def test_query_yield_counts_only_jobs_not_seen_by_earlier_queries(tmp_path: Path) -> None:
+    """A segunda query sobreposta só conta o que a primeira não trouxe."""
+    class OverlapBrowser(StubBrowser):
+        def search_page(self, query: str, location: str = "", start: int = 0) -> str:
+            ids = {"A": [1, 2], "B": [1, 2, 3]}[query]
+            return _cards_html([f".NET Engineer {job_id}" for job_id in ids])
+
+    class DedupeRepo(StubRepo):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: set[str] = set()
+
+        def upsert_job(self, job: JobOpportunity) -> bool:
+            if job.external_id in self.seen:
+                return False
+            self.seen.add(job.external_id)
+            return super().upsert_job(job)
+
+    base = Settings.load()
+    settings = base.model_copy(
+        update={
+            "search": base.search.model_copy(
+                update={"queries": ["A", "B"], "locations": ["Brazil"]}
+            ),
+            "storage": base.storage.model_copy(
+                update={"control_file": str(tmp_path / "control.json")}
+            ),
+        }
+    )
+    repo = DedupeRepo()
+    agent = BrowserResearchAgent(OverlapBrowser(), repo, settings)  # type: ignore[arg-type]
+
+    assert agent.run() == 3
+    assert [
+        (item.query, item.found, item.eligible, item.new, item.cumulative)
+        for item in agent.last_yields
+    ] == [("A", 2, 2, 2, 2), ("B", 3, 3, 1, 3)]
+    assert agent.last_yields[1].new_ratio == round(1 / 3, 4)
+
+
+def test_yield_ranking_orders_by_marginal_new_jobs() -> None:
+    """O ranking revela termos redundantes mesmo com alto retorno bruto."""
+    yields = [
+        QueryYield("A", 1, 3, 100, 100, {}, 2, 2),
+        QueryYield("B", 2, 3, 100, 100, {}, 5, 7),
+        QueryYield("C", 3, 3, 100, 100, {}, 0, 7),
+    ]
+    ranking = yield_ranking(yields)
+
+    assert [
+        (row["position"], row["query"], row["new"], row["cumulative"]) for row in ranking
+    ] == [(1, "B", 5, 7), (2, "A", 2, 2), (3, "C", 0, 7)]
+    assert ranking[0]["new_ratio"] == 0.05
+    assert ranking[2]["new_ratio"] == 0.0
+
+
+def test_yield_ranking_breaks_ties_by_execution_order() -> None:
+    tied = [
+        QueryYield("segundo", 2, 2, 10, 10, {}, 1, 3),
+        QueryYield("primeiro", 1, 2, 10, 10, {}, 1, 2),
+    ]
+    assert [row["query"] for row in yield_ranking(tied)] == ["primeiro", "segundo"]
 
 
 def test_card_ages_are_not_swapped_between_neighbors() -> None:
