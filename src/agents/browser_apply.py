@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
+from urllib.parse import parse_qs, unquote, urlparse
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -57,10 +59,6 @@ _EXTERNAL_APPLY_LABELS = (
 )
 _APPLY_LABELS = _EASY_APPLY_LABELS + _EXTERNAL_APPLY_LABELS
 
-# Portais conhecidos onde o clique no LinkedIn leva a uma página de descrição
-# com um SEGUNDO botão ("Apply"/"Aplicar") antes do formulário.
-_EXTERNAL_PORTALS = ("bairesdev.com", "strider.com")
-
 # Sinais de que o portal externo está pedindo login — nesse caso a candidatura
 # depende de ação humana (credenciais/2FA), nunca de automação.
 _LOGIN_MARKS = (
@@ -82,6 +80,20 @@ def _is_login_page(url: str, text: str) -> bool:
     return any(mark in lowered for mark in _LOGIN_MARKS) and any(
         mark in lowered for mark in credential_marks
     )
+
+
+class ApplyRoute(str, Enum):
+    """Rotas possíveis de candidatura — decididas pelo próprio agente.
+
+    O agente NÃO cria um agente derivado para cada site: ele reconhece a rota
+    e reutiliza o mesmo fluxo. ``KNOWN_PORTAL`` significa que já temos cadastro
+    no site da empresa (config ``application.known_portals``): basta seguir o
+    redirecionamento e clicar em Apply no portal, estando logados.
+    """
+
+    EASY_APPLY = "easy_apply"
+    KNOWN_PORTAL = "known_portal"
+    EXTERNAL_SIGNUP = "external_signup"
 
 
 @dataclass
@@ -194,6 +206,37 @@ class BrowserApplyAgent:
                     break
         return candidatos
 
+    @staticmethod
+    def _cta_destination(locator: Any) -> str:
+        """URL final do CTA externo (o LinkedIn a embrulha em /safety/go/)."""
+        try:
+            href = str(
+                locator.evaluate(
+                    "e => (e.closest('a') || e).getAttribute('href') || ''"
+                )
+                or ""
+            )
+        except Exception:
+            return ""
+        if "/safety/go" in href or "url=" in href:
+            alvo = parse_qs(urlparse(href).query).get("url", [""])[0]
+            return unquote(alvo)
+        return href
+
+    def _decide_route(self, job: JobOpportunity, label: str, destino: str) -> ApplyRoute:
+        """Decide o fluxo: simplificada, portal conhecido ou cadastro externo."""
+        if label in _EASY_APPLY_LABELS:
+            return ApplyRoute.EASY_APPLY
+        dominio = domain_of(destino) or domain_of(job.external_apply_url or "")
+        if dominio:
+            for portal in self.settings.application.known_portals:
+                normalizado = self.repo.normalize_company(portal).lower()
+                if normalizado and normalizado in dominio:
+                    return ApplyRoute.KNOWN_PORTAL
+            return ApplyRoute.EXTERNAL_SIGNUP
+        # CTA externo sem destino identificável: não inventar cadastro.
+        return ApplyRoute.EXTERNAL_SIGNUP
+
     def _open(
         self, job: JobOpportunity
     ) -> tuple[Any, dict[str, Any], ApplyObservation]:
@@ -226,23 +269,43 @@ class BrowserApplyAgent:
 
         observation = ApplyObservation(None)
         clicked = False
+        rota: ApplyRoute | None = None
         candidatos = self._apply_candidates(page)
         # O CTA da vaga fica no topo; a barra lateral repete "Candidatura
         # simplificada" em cards de outras vagas. Escolher o primeiro texto
         # encontrado clicava na vaga errada — por isso ordenamos por posição.
         candidatos.sort(key=lambda item: item[0])
-        for posicao, label, origem, locator in candidatos:
+        if candidatos:
+            posicao, label, origem, locator = candidatos[0]
+            destino = self._cta_destination(locator)
+            rota = self._decide_route(job, label, destino)
+            log_event(
+                "browser_apply_route_decided",
+                route=rota.value,
+                label=label,
+                destination=domain_of(destino),
+                external_id=job.external_id,
+            )
+            if rota is ApplyRoute.EXTERNAL_SIGNUP:
+                self.browser.close_tab(page)
+                raise HumanActionRequired(
+                    "cadastro",
+                    f"a vaga em {domain_of(destino) or 'portal externo'} exige cadastro "
+                    "prévio; portal não listado em application.known_portals",
+                )
             try:
                 before = {id(p) for p in page.context.pages}
                 locator.click()
                 clicked = True
-                easy = label in _EASY_APPLY_LABELS
-                observation = ApplyObservation(easy, label)
+                observation = ApplyObservation(
+                    rota is ApplyRoute.EASY_APPLY, label
+                )
                 log_event(
                     "browser_apply_clicked",
                     label=label,
                     locator=origem,
                     y=posicao,
+                    route=rota.value,
                     external_id=job.external_id,
                 )
                 page.wait_for_timeout(1800)
@@ -254,9 +317,8 @@ class BrowserApplyAgent:
                     self.browser.close_tab(page)
                     page = target
                     page.wait_for_timeout(1800)
-                break
             except Exception:
-                continue
+                pass
         if not clicked:
             # Fallback quando o botão está em iframe/aria-label e só o texto
             # renderizado é confiável. Nunca inventa Easy Apply sem evidência.
@@ -265,9 +327,7 @@ class BrowserApplyAgent:
             elif has_external_text:
                 observation = ApplyObservation(False, "texto_apply_externo")
         try:
-            if clicked and any(
-                portal in domain_of(page.url) for portal in _EXTERNAL_PORTALS
-            ):
+            if clicked and rota is ApplyRoute.KNOWN_PORTAL:
                 page = self._advance_external_portal(page)
             if clicked:
                 snapshot = snapshot_form(page)
@@ -301,13 +361,20 @@ class BrowserApplyAgent:
         self._ensure_no_login(page, snapshot)
         if snapshot.get("fields"):
             return page
+        # O CTA real da BairesDev é o botão do card da vaga. Usar o seletor
+        # semântico evita confundir com links de navegação do cabeçalho.
+        especifico = page.locator('[data-cy="jobApplyApply"]')
+        opcoes: list[tuple[str, Any]] = []
+        if especifico.count():
+            opcoes.append(("data-cy:jobApplyApply", especifico.first))
         for label in ("Aplicar", "Apply", "Apply now!", "Candidatar-se", "Enviar candidatura"):
             locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
             if locator.count() == 0:
                 locator = page.get_by_text(label, exact=True)
-            if locator.count() == 0:
-                continue
-            alvo = locator.first
+            if locator.count():
+                opcoes.append((label, locator.first))
+
+        for label, alvo in opcoes:
             try:
                 if not alvo.is_visible():
                     continue

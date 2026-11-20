@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.agents.browser_apply import ApplyObservation, BrowserApplyAgent, _value_from_source
+from src.agents.browser_apply import (
+    ApplyObservation,
+    ApplyRoute,
+    BrowserApplyAgent,
+    _value_from_source,
+)
 from src.core.config import Settings
 from src.core.errors import HumanActionRequired, ValidationError
 from src.core.state import JobStatus
@@ -44,8 +49,47 @@ class FakeRepo:
             self.approval.status = "APPROVED" if approved else "REJECTED"
         return self.approval
 
+    def normalize_company(self, name):
+        return (name or "").lower().replace(" ", "").replace(".", "").replace("llc", "")
+
     def update_job(self, job):
         self.updated.append(job.status)
+
+
+class FakeLocator:
+    def __init__(self, href: str) -> None:
+        self.href = href
+        self.clicked = False
+
+    def evaluate(self, _script: str) -> str:
+        return self.href
+
+    def click(self) -> None:
+        self.clicked = True
+
+
+class FakePage:
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+
+class FakeBrowser:
+    def __init__(self, page: FakePage) -> None:
+        self.page = page
+        self.closed: list[FakePage] = []
+
+    def open_tab(self, _url: str) -> FakePage:
+        return self.page
+
+    def close_tab(self, page: FakePage) -> None:
+        self.closed.append(page)
+
+
+def _route_agent() -> BrowserApplyAgent:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.repo = FakeRepo()
+    agent.settings = Settings()
+    return agent
 
 
 def test_easy_apply_is_recorded_after_classification() -> None:
@@ -80,6 +124,63 @@ def test_external_apply_is_recorded_without_easy_apply() -> None:
     assert job.easy_apply is False
     assert job.easy_apply_source == "browser_apply"
     assert job.channel == "external_portal"
+
+
+def test_route_easy_apply_uses_the_simplified_flow() -> None:
+    agent = _route_agent()
+    job = JobOpportunity(external_id="123456789", title="Engineer", company="Acme")
+
+    rota = agent._decide_route(job, "Candidatura simplificada", "")
+
+    assert rota is ApplyRoute.EASY_APPLY
+
+
+def test_route_bairesdev_redirect_is_known_portal() -> None:
+    agent = _route_agent()
+    job = JobOpportunity(external_id="123456789", title="Engineer", company="BairesDev")
+    href = (
+        "https://www.linkedin.com/safety/go/?url="
+        "https%3A%2F%2Fapplicants.bairesdev.com%2Fjob%2F453%2F298508%2Fapply%3Flang%3Den"
+    )
+
+    destino = BrowserApplyAgent._cta_destination(FakeLocator(href))
+
+    assert destino == "https://applicants.bairesdev.com/job/453/298508/apply?lang=en"
+    assert agent._decide_route(job, "Candidatar-se", destino) is ApplyRoute.KNOWN_PORTAL
+
+
+def test_route_unknown_external_portal_requires_signup() -> None:
+    agent = _route_agent()
+    job = JobOpportunity(external_id="123456789", title="Engineer", company="Acme")
+
+    rota = agent._decide_route(job, "Candidatar-se", "https://example.com/apply")
+
+    assert rota is ApplyRoute.EXTERNAL_SIGNUP
+
+
+def test_external_signup_stops_before_clicking(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = _route_agent()
+    job = JobOpportunity(
+        external_id="123456789", status=JobStatus.QUALIFIED, title="Engineer", company="Acme"
+    )
+    page = FakePage("https://www.linkedin.com/jobs/view/123456789")
+    agent.browser = FakeBrowser(page)
+    locator = FakeLocator("https://example.com/apply")
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda _page: {"url": page.url, "title": "Engineer | LinkedIn", "text": "Candidatar-se"},
+    )
+    monkeypatch.setattr(
+        BrowserApplyAgent,
+        "_apply_candidates",
+        staticmethod(lambda _page: [(100, "Candidatar-se", "text", locator)]),
+    )
+
+    with pytest.raises(HumanActionRequired, match="cadastro"):
+        agent._open(job)
+
+    assert locator.clicked is False
+    assert agent.browser.closed == [page]
 
 
 def test_easy_apply_is_not_recorded_for_rejected_job() -> None:
