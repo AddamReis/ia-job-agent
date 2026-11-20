@@ -34,6 +34,7 @@ from ..execution.web.form_dom import (
     submission_state,
 )
 from ..execution.web.linkedin_logged import LinkedInLoggedBrowser
+from ..execution.web.portal_credentials import PortalCredentialStore
 from ..execution.web.site_patterns import SitePatternStore, domain_of
 from ..models.domain import (
     AnswerRecord,
@@ -160,6 +161,7 @@ class BrowserApplyAgent:
         self.bus = bus
         self.memory = memory
         self.browser = LinkedInLoggedBrowser(cdp_url, timeout_ms=settings.browser.timeout_ms)
+        self.portal_credentials = PortalCredentialStore()
         self.patterns = SitePatternStore(settings.resolve("data/site_patterns.json"))
         self._pending: dict[str, PreparedForm] = {}
 
@@ -328,6 +330,7 @@ class BrowserApplyAgent:
                 observation = ApplyObservation(False, "texto_apply_externo")
         try:
             if clicked and rota is ApplyRoute.KNOWN_PORTAL:
+                page = self._ensure_portal_login(page)
                 page = self._advance_external_portal(page)
             if clicked:
                 snapshot = snapshot_form(page)
@@ -350,6 +353,102 @@ class BrowserApplyAgent:
                 "Chrome debug antes de candidatar",
             )
 
+    def _ensure_portal_login(self, page: Any) -> Any:
+        """Faz login automático em portal conhecido usando credenciais do keyring.
+
+        Nunca resolve CAPTCHA/MFA/verificação: se a plataforma pedir isso, a
+        barreira abaixo interrompe e sinaliza ação humana.
+        """
+        snapshot = snapshot_form(page)
+        url = str(snapshot.get("url", "") or page.url)
+        if not _is_login_page(url, str(snapshot.get("text", "") or "")):
+            return page
+        dominio = domain_of(url)
+        cfg = self.settings.application.portal_auth.get(dominio)
+        if cfg is None:
+            raise HumanActionRequired(
+                "login", f"portal {dominio or 'desconhecido'} exige login e não tem config de automação"
+            )
+        credenciais = self.portal_credentials.get(dominio)
+        if credenciais is None:
+            raise HumanActionRequired(
+                "login",
+                f"credenciais de {dominio} não cadastradas; "
+                f"rode: python -m src.cli portal-auth --set --domain {dominio}",
+            )
+        usuario, senha = credenciais
+        try:
+            campo_usuario = page.locator(cfg.username_selector).first
+            campo_senha = page.locator(cfg.password_selector).first
+            campo_usuario.fill(usuario)
+            campo_senha.fill(senha)
+            clicou = False
+            for label in cfg.submit_labels:
+                locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
+                if locator.count() == 0:
+                    locator = page.get_by_text(label, exact=True)
+                if locator.count():
+                    locator.first.click()
+                    clicou = True
+                    break
+            if not clicou:
+                raise ValidationError("botão de login não encontrado no portal")
+            page.wait_for_timeout(3000)
+        except HumanActionRequired:
+            raise
+        except Exception as exc:
+            raise BlockedByPlatformError(
+                f"falha ao automatizar login em {dominio}: {type(exc).__name__}"
+            ) from exc
+
+        snapshot = snapshot_form(page)
+        url = str(snapshot.get("url", "") or page.url)
+        texto = str(snapshot.get("text", "") or "").lower()
+        if _is_login_page(url, texto):
+            sinais_verificacao = (
+                "captcha", "just a moment", "verificação", "verificacao",
+                "verificacion", "confirm you are human", "mfa", "2fa",
+            )
+            if any(sinal in texto for sinal in sinais_verificacao):
+                raise BlockedByPlatformError(
+                    f"verificação/CAPTCHA no login de {dominio}; agente não interage"
+                )
+            raise HumanActionRequired(
+                "login", f"login automático em {dominio} não foi confirmado; verifique as credenciais"
+            )
+        log_event("portal_login_automated", domain=dominio, company=cfg.company)
+        return page
+
+    def _handle_post_submit_assessment(self, page: Any, domain: str) -> None:
+        """Distingue confirmação de envio de testes internos da plataforma.
+
+        No LinkedIn, o diálogo pós-envio traz dados da candidatura (e-mail, nome).
+        Em portais próprios pode trazer testes internos da empresa — isso NÃO é
+        parte da candidatura em si e, quando já concluídos, só é informativo.
+        """
+        if domain == "linkedin.com":
+            return
+        cfg = self.settings.application.portal_auth.get(domain)
+        if cfg is None:
+            return
+        texto = str(page.evaluate("() => document.body.innerText") or "").lower()
+        if not any(marker in texto for marker in cfg.assessment_markers):
+            return
+        log_event(
+            "portal_assessment_detected",
+            domain=domain,
+            company=cfg.company,
+            status=cfg.assessment_status,
+        )
+        if cfg.assessment_status == "completed":
+            log_event(
+                "portal_assessment_already_completed",
+                domain=domain,
+                company=cfg.company,
+            )
+            return
+        log_event("portal_assessment_pending", domain=domain, company=cfg.company)
+
     def _advance_external_portal(self, page: Any) -> Any:
         """Portais conhecidos abrem o form só após um segundo clique.
 
@@ -357,6 +456,7 @@ class BrowserApplyAgent:
         clicar em "Apply"/"Aplicar" para revelar o formulário. Se esse clique
         cair no login, a barreira abaixo interrompe e pede ação humana.
         """
+        page = self._ensure_portal_login(page)
         snapshot = snapshot_form(page)
         self._ensure_no_login(page, snapshot)
         if snapshot.get("fields"):
@@ -391,6 +491,7 @@ class BrowserApplyAgent:
                 page = novas[0]
                 page.wait_for_timeout(2000)
             log_event("browser_apply_portal_advanced", label=label, url=page.url[:160])
+            page = self._ensure_portal_login(page)
             snapshot = snapshot_form(page)
             self._ensure_no_login(page, snapshot)
             return page
@@ -667,6 +768,8 @@ class BrowserApplyAgent:
                 job.status = JobStatus.FAILED
                 self.repo.update_job(job)
                 raise ValidationError("envio não confirmado pelo portal")
+
+            self._handle_post_submit_assessment(page, domain)
 
             application = Application(
                 trace_id=job.trace_id,

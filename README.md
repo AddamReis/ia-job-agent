@@ -120,6 +120,19 @@ sua lista real (BairesDev/Strider são apenas exemplos). A ordem é
 `application.channel_priority`. O envio em portais externos com confirmação de cadastro é a
 etapa seguinte; o registro de candidatura só acontece quando o portal confirma o sucesso.
 
+Para portais em `application.portal_auth`, o próprio agente faz login com usuário/senha salvas no
+Windows Credential Manager — você não precisa abrir site por site. Cadastre uma vez:
+
+```powershell
+python -m src.cli portal-auth --set --domain applicants.bairesdev.com --username SEU_USUARIO
+```
+
+A senha é pedida com eco desligado e nunca vai para config, banco ou log. Se o portal pedir
+CAPTCHA/MFA/verificação, o agente para sem interagir. O `APPROVED` humano antes de cada Submit
+continua obrigatório. O diálogo pós-envio com testes internos da plataforma é tratado como
+informação: em portal com `assessment_status: completed` (ex.: BairesDev) ele não é confundido
+com dados da candidatura nem reexecutado.
+
 Importante: **a API pública do LinkedIn não informa se uma vaga é Easy Apply**. Por isso a
 coluna `easy_apply` é tri-estado: `NULL` = ainda não analisada, `True` = botão de candidatura
 simplificada visto na tela do celular, `False` = visto e ausente. A descoberta pública nunca

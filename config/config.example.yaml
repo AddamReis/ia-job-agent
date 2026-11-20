@@ -186,6 +186,18 @@ company_suppression:
 
 application:
   known_portals: ["BairesDev", "Strider"]
+  # Login automatizado com credenciais do keyring por domínio real do portal.
+  # Senha NUNCA fica aqui: use `agent portal-auth --set --domain ...`.
+  portal_auth:
+    applicants.bairesdev.com:
+      company: "BairesDev"
+      login_url: "https://applicants.bairesdev.com/login"
+      username_selector: 'input[autocomplete="username"]'
+      password_selector: 'input[type="password"]'
+      submit_labels: ["Ingresar"]
+      # Testes internos da plataforma já concluídos: o diálogo pós-envio é
+      # informativo e NÃO deve ser confundido com dados da candidatura.
+      assessment_status: "completed"
   channel_priority: ["easy_apply", "known_portal", "external_portal"]
   # Prioridade geografica (antes do canal): America do Norte > AU > NZ > Europa > Brasil.
   region_priority: ["latam", "americas_north", "australia", "new_zealand", "europe", "brazil", "other"]

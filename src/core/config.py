@@ -212,10 +212,47 @@ class QualificationConfig(BaseModel):
     reject: RejectConfig = Field(default_factory=RejectConfig)
 
 
+class PortalAuthConfig(BaseModel):
+    """Conhecimento de autenticação e testes internos de um portal conhecido."""
+
+    company: str = ""
+    login_url: str = ""
+    username_selector: str = 'input[autocomplete="username"]'
+    password_selector: str = 'input[type="password"]'
+    submit_labels: list[str] = Field(
+        default_factory=lambda: ["Ingresar", "Entrar", "Sign in", "Log in"]
+    )
+    login_url_marks: list[str] = Field(
+        default_factory=lambda: ["/login", "/signin", "/sign-in"]
+    )
+    # Resultado dos testes internos da plataforma. "completed" significa que o
+    # diálogo pós-envio é informativo: a candidatura NÃO depende dele.
+    assessment_status: Literal["completed", "pending", "unknown"] = "unknown"
+    assessment_markers: list[str] = Field(
+        default_factory=lambda: [
+            "assessment", "test", "prueba", "evaluación", "evaluacion",
+            "avaliação", "avaliacao",
+        ]
+    )
+
+
 class ApplicationConfig(BaseModel):
     """Canais de candidatura e prioridade de execução (menor índice = primeiro)."""
 
     known_portals: list[str] = Field(default_factory=lambda: ["BairesDev", "Strider"])
+    # Portais onde o agente já sabe fazer login com usuário/senha do keyring.
+    portal_auth: dict[str, PortalAuthConfig] = Field(
+        default_factory=lambda: {
+            "applicants.bairesdev.com": PortalAuthConfig(
+                company="BairesDev",
+                login_url="https://applicants.bairesdev.com/login",
+                username_selector='input[autocomplete="username"]',
+                password_selector='input[type="password"]',
+                submit_labels=["Ingresar"],
+                assessment_status="completed",
+            )
+        }
+    )
     channel_priority: list[str] = Field(
         default_factory=lambda: ["easy_apply", "known_portal", "external_portal"]
     )

@@ -26,6 +26,7 @@ from .core.events import Event, EventBus
 from .core.geo import normalize_location
 from .core.state import JobStatus
 from .dashboard import Dashboard
+from .execution.web.portal_credentials import PortalCredentialStore
 from .llm.factory import LLMRouter
 from .storage.database import Repository
 
@@ -175,6 +176,46 @@ def device(
         orchestrator.adb.require_device()
         changed = orchestrator.adb.unlock_if_needed()
         console.print("Tela desbloqueada." if changed else "Dispositivo já estava desbloqueado.")
+
+
+@app.command("portal-auth")
+def portal_auth(
+    set_credentials: bool = typer.Option(False, "--set", help="Cadastrar usuário/senha"),
+    delete_credentials: bool = typer.Option(False, "--delete", help="Remover credenciais"),
+    domain: str = typer.Option("", "--domain", help="Domínio real do portal"),
+    username: str = typer.Option("", "--username", help="Usuário (opcional; pode ser digitado depois)"),
+) -> None:
+    """Gerencia credenciais de portais conhecidos no cofre do Windows.
+
+    A senha é lida com echo desligado e nunca aparece em log, banco ou config.
+    """
+    store = PortalCredentialStore()
+    if set_credentials:
+        if not domain:
+            console.print("[red]Informe --domain (ex.: applicants.bairesdev.com).[/red]")
+            raise typer.Exit(code=1)
+        usuario = username or typer.prompt("Usuário")
+        senha = typer.prompt("Senha", hide_input=True)
+        store.set(domain, usuario, senha)
+        console.print(f"[green]Credenciais de {domain} salvas no cofre do Windows.[/green]")
+        return
+    if delete_credentials:
+        if not domain:
+            console.print("[red]Informe --domain para remover.[/red]")
+            raise typer.Exit(code=1)
+        store.delete(domain)
+        console.print(f"[yellow]Credenciais de {domain} removidas.[/yellow]")
+        return
+
+    dominios = list(_settings().application.portal_auth)
+    if domain:
+        dominios = [domain]
+    tabela = Table(title="PORTAL AUTH")
+    tabela.add_column("domínio")
+    tabela.add_column("credenciais")
+    for item in dominios:
+        tabela.add_row(item, "cadastradas" if store.has(item) else "ausentes")
+    console.print(tabela)
 
 
 @app.command("device-pending")
