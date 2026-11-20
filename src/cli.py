@@ -854,7 +854,7 @@ def browser_apply_cmd(
         cdp_url=settings.browser.cdp_url,
         memory=orchestrator.qualification_memory,
     )
-    prepared = submitted = rejected = failed = 0
+    prepared = submitted = rejected = failed = already = 0
 
     for job_id in ids:
         job = repo.get_job(job_id)
@@ -879,6 +879,13 @@ def browser_apply_cmd(
                     raise ValidationError("candidatura já registrada para esta vaga")
             else:
                 approval = agent.prepare(job)
+                if approval is None:
+                    already += 1
+                    console.print(
+                        f"[cyan]Já candidaturada:[/cyan] {job.company} — {job.title}\n"
+                        "[dim]Candidatura existente registrada; nenhum envio nem aprovação criado.[/dim]"
+                    )
+                    continue
             prepared += 1
 
             if prepare_only:
@@ -921,7 +928,7 @@ def browser_apply_cmd(
 
     console.print(
         f"Preparadas: {prepared} | enviadas: [green]{submitted}[/green] | "
-        f"reprovadas: {rejected} | falhas: {failed}"
+        f"reprovadas: {rejected} | falhas: {failed} | já candidaturadas: {already}"
     )
 
 

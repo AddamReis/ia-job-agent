@@ -120,18 +120,29 @@ sua lista real (BairesDev/Strider são apenas exemplos). A ordem é
 `application.channel_priority`. O envio em portais externos com confirmação de cadastro é a
 etapa seguinte; o registro de candidatura só acontece quando o portal confirma o sucesso.
 
-Para portais em `application.portal_auth`, o próprio agente faz login com usuário/senha salvas no
-Windows Credential Manager — você não precisa abrir site por site. Cadastre uma vez:
+Para portais em `application.portal_auth`, o próprio agente faz login — você não precisa abrir
+site por site. Existem dois modos:
+
+- `auth_mode: "google"` (BairesDev): o agente clica em "Ingresa con Google", escolhe a conta
+  configurada em `oauth_account_email` e conclui o consentimento reaproveitando a sessão Google
+  já autenticada no Chrome CDP. **Não existe senha da BairesDev** e não é preciso cadastrar nada
+  no cofre.
+- `auth_mode: "password"` (outros portais): usuário/senha ficam no Windows Credential Manager.
+  Cadastre uma vez:
 
 ```powershell
-python -m src.cli portal-auth --set --domain applicants.bairesdev.com --username SEU_USUARIO
+python -m src.cli portal-auth --set --domain portal.exemplo.com --username SEU_USUARIO
 ```
 
-A senha é pedida com eco desligado e nunca vai para config, banco ou log. Se o portal pedir
-CAPTCHA/MFA/verificação, o agente para sem interagir. O `APPROVED` humano antes de cada Submit
-continua obrigatório. O diálogo pós-envio com testes internos da plataforma é tratado como
-informação: em portal com `assessment_status: completed` (ex.: BairesDev) ele não é confundido
+A senha é pedida com eco desligado e nunca vai para config, banco ou log. Se o portal ou o Google
+pedirem CAPTCHA/MFA/verificação/senha, o agente para sem interagir. O `APPROVED` humano antes de
+cada Submit continua obrigatório. O diálogo pós-envio com testes internos da plataforma é tratado
+como informação: em portal com `assessment_status: completed` (ex.: BairesDev) ele não é confundido
 com dados da candidatura nem reexecutado.
+
+Se o portal mostrar sinal de candidatura já enviada (`already_applied_markers`, ex.: "Ver
+solicitud" na BairesDev), o agente registra a candidatura existente, marca a vaga como
+`SUBMITTED` e **não** cria aprovação, anexa CV ou clica em Submit — evitando duplicação.
 
 Importante: **a API pública do LinkedIn não informa se uma vaga é Easy Apply**. Por isso a
 coluna `easy_apply` é tri-estado: `NULL` = ainda não analisada, `True` = botão de candidatura

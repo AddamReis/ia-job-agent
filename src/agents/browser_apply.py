@@ -66,6 +66,12 @@ _LOGIN_MARKS = (
     "/login", "/signin", "/sign-in", "sign in", "iniciar sesión",
     "entrar", "ingresar", "iniciar sessão", "iniciar sessao",
 )
+# Sinais genéricos de candidatura já enviada (portais sem config específica).
+_ALREADY_APPLIED_MARKERS = (
+    "ver solicitud", "view application", "application submitted",
+    "aplicación enviada", "aplicacion enviada", "candidatura enviada",
+    "ya te has postulado", "you already applied", "ver candidatura",
+)
 
 
 def _is_login_page(url: str, text: str) -> bool:
@@ -119,10 +125,16 @@ class PreparedForm:
 
 @dataclass
 class ApplyObservation:
-    """Evidência de Easy Apply colhida na MESMA abertura usada para candidatar."""
+    """Evidência colhida na MESMA abertura usada para candidatar.
+
+    ``already_applied`` indica que o portal mostrou sinal de candidatura já
+    enviada (ex.: "Ver solicitud" na BairesDev). Nesse caso o agente registra a
+    candidatura existente e NÃO cria aprovação nem tenta upload/Submit.
+    """
 
     easy_apply: bool | None
     label: str = ""
+    already_applied: bool = False
 
 
 def _value_from_source(profile: CandidateProfile, source: str) -> str:
@@ -250,7 +262,11 @@ class BrowserApplyAgent:
         page = self.browser.open_tab(self.job_url(job))
         snapshot = snapshot_form(page)
         if domain_of(snapshot.get("url", "")) != "linkedin.com":
-            return page, snapshot, ApplyObservation(False, "portal_externo")
+            observation = ApplyObservation(False, "portal_externo")
+            if self._detect_already_applied(page, snapshot):
+                observation.already_applied = True
+                self._log_already_applied(job, snapshot)
+            return page, snapshot, observation
 
         title = str(snapshot.get("title", "") or "").lower()
         text = str(snapshot.get("text", "") or "").lower()
@@ -335,6 +351,9 @@ class BrowserApplyAgent:
             if clicked:
                 snapshot = snapshot_form(page)
                 self._ensure_no_login(page, snapshot)
+                if self._detect_already_applied(page, snapshot):
+                    observation.already_applied = True
+                    self._log_already_applied(job, snapshot)
         except Exception:
             self.browser.close_tab(page)
             raise
@@ -353,8 +372,136 @@ class BrowserApplyAgent:
                 "Chrome debug antes de candidatar",
             )
 
+    def _detect_already_applied(self, page: Any, snapshot: dict[str, Any]) -> bool:
+        """Reconhece candidatura já enviada no portal, sem confundir com testes.
+
+        A BairesDev troca o CTA "Apply" por "Ver solicitud" quando a candidatura
+        existe. Isso é evidência do portal — não é um formulário a preencher.
+        """
+        dominio = domain_of(str(snapshot.get("url", "") or page.url))
+        cfg = self.settings.application.portal_auth.get(dominio)
+        marcadores = list(cfg.already_applied_markers) if cfg else list(_ALREADY_APPLIED_MARKERS)
+        texto = str(snapshot.get("text", "") or "")
+        try:
+            texto += " " + str(page.evaluate("() => document.body.innerText") or "")
+        except Exception:
+            pass
+        baixo = texto.lower()
+        return any(marcador.lower() in baixo for marcador in marcadores)
+
+    @staticmethod
+    def _log_already_applied(job: JobOpportunity, snapshot: dict[str, Any]) -> None:
+        log_event(
+            "browser_apply_already_applied_detected",
+            external_id=job.external_id,
+            domain=domain_of(str(snapshot.get("url", "") or "")),
+            url=str(snapshot.get("url", "") or "")[:160],
+        )
+
+    def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
+        """Completa OAuth Google reaproveitando a sessão do Chrome CDP.
+
+        Nunca digita senha nem resolve verificação: se o Google pedir senha,
+        CAPTCHA ou outra checagem, o agente para com ação humana.
+        """
+        contexto = page.context
+        clicou = False
+        for rotulo in cfg.oauth_labels:
+            alvo = page.get_by_text(rotulo, exact=False)
+            if alvo.count() == 0:
+                alvo = page.get_by_role("button", name=re.compile(re.escape(rotulo), re.I))
+            if alvo.count():
+                alvo.first.click()
+                clicou = True
+                page.wait_for_timeout(2500)
+                break
+        if not clicou:
+            raise HumanActionRequired(
+                "login", f"botão de login Google não encontrado em {dominio}"
+            )
+
+        google = None
+        for _ in range(8):
+            google = next(
+                (p for p in contexto.pages if "accounts.google.com" in p.url), None
+            )
+            if google is not None:
+                break
+            page.wait_for_timeout(1000)
+        if google is None:
+            raise BlockedByPlatformError(
+                f"OAuth Google de {dominio} não abriu a seleção de conta"
+            )
+
+        try:
+            texto = str(google.evaluate("() => document.body.innerText") or "")
+        except Exception:
+            texto = ""
+        baixo = texto.lower()
+        if any(
+            sinal in baixo
+            for sinal in (
+                "captcha", "unusual traffic", "verificação", "verificacao",
+                "confirm you are human", "2fa",
+            )
+        ):
+            raise BlockedByPlatformError(
+                "verificação/CAPTCHA no OAuth Google; agente não interage"
+            )
+
+        email = cfg.oauth_account_email
+        if email and email.lower() in baixo:
+            conta = google.get_by_text(email, exact=False)
+            if conta.count():
+                conta.first.click()
+                google.wait_for_timeout(1500)
+                try:
+                    texto = str(google.evaluate("() => document.body.innerText") or "")
+                except Exception:
+                    texto = ""
+                if any(sinal in texto.lower() for sinal in ("digite sua senha", "enter your password")):
+                    raise HumanActionRequired(
+                        "login", "Google pediu senha; agente não digita credencial"
+                    )
+
+        for rotulo in cfg.oauth_continue_labels:
+            botao = google.get_by_text(rotulo, exact=False)
+            if botao.count() == 0:
+                botao = google.get_by_role("button", name=re.compile(re.escape(rotulo), re.I))
+            if botao.count():
+                try:
+                    botao.first.click()
+                except Exception:
+                    continue
+                google.wait_for_timeout(4000)
+                break
+
+        destino = None
+        for _ in range(8):
+            for candidata in contexto.pages:
+                url = str(candidata.url or "")
+                if domain_of(url) == dominio and not _is_login_page(url, ""):
+                    destino = candidata
+                    break
+            if destino is not None:
+                break
+            page.wait_for_timeout(1000)
+
+        for aba in list(contexto.pages):
+            if "accounts.google.com" in str(aba.url or "") and aba is not destino:
+                try:
+                    self.browser.close_tab(aba)
+                except Exception:
+                    pass
+        if destino is None:
+            raise HumanActionRequired(
+                "login", f"OAuth Google de {dominio} não retornou ao portal autenticado"
+            )
+        log_event("portal_google_oauth", domain=dominio, company=cfg.company, account=email)
+        return destino
+
     def _ensure_portal_login(self, page: Any) -> Any:
-        """Faz login automático em portal conhecido usando credenciais do keyring.
+        """Faz login automático em portal conhecido (OAuth Google ou keyring).
 
         Nunca resolve CAPTCHA/MFA/verificação: se a plataforma pedir isso, a
         barreira abaixo interrompe e sinaliza ação humana.
@@ -369,6 +516,8 @@ class BrowserApplyAgent:
             raise HumanActionRequired(
                 "login", f"portal {dominio or 'desconhecido'} exige login e não tem config de automação"
             )
+        if cfg.auth_mode == "google":
+            return self._google_oauth_login(page, cfg, dominio)
         credenciais = self.portal_credentials.get(dominio)
         if credenciais is None:
             raise HumanActionRequired(
@@ -629,8 +778,58 @@ class BrowserApplyAgent:
             )
         return decisions
 
-    def prepare(self, job: JobOpportunity) -> ApprovalRequest:
-        """Lê o formulário e cria/reusa a aprovação. Não clica em Submit."""
+    def _record_existing_application(
+        self, job: JobOpportunity, snapshot: dict[str, Any], observation: ApplyObservation
+    ) -> Application:
+        """Registra candidatura já existente no portal, com evidência observada.
+
+        Não passa pelo ApprovalGate: nada foi enviado por esta execução. O
+        ``APPROVED`` continua obrigatório apenas para envios novos.
+        """
+        url = str(snapshot.get("url", "") or "")
+        dominio = domain_of(url)
+        cfg = self.settings.application.portal_auth.get(dominio)
+        marcadores = list(cfg.already_applied_markers) if cfg else list(_ALREADY_APPLIED_MARKERS)
+        texto = str(snapshot.get("text", "") or "")
+        evidencias = [m for m in marcadores if m.lower() in texto.lower()]
+        evidencia = ", ".join(evidencias[:3]) or "sinal de candidatura existente no portal"
+        application = Application(
+            trace_id=job.trace_id,
+            opportunity_id=job.id,
+            company=job.company,
+            title=job.title,
+            status="SUBMITTED",
+            channel=job.channel,
+            resume_path=self.profile.documents.get("resume", ""),
+            portal_url=url,
+            notes=f"candidatura já existente no portal: {evidencia}",
+            success_feedback=evidencia,
+        )
+        self.repo.record_application(application)
+        job.status = JobStatus.SUBMITTED
+        job.has_applied = True
+        job.applied_at = application.applied_at or datetime.now()
+        self.repo.update_job(job)
+        log_event(
+            "browser_apply_already_applied",
+            external_id=job.external_id,
+            company=job.company,
+            title=job.title,
+            domain=dominio,
+            evidence=evidencia,
+            label=observation.label,
+        )
+        if self.bus:
+            self.bus.emit("application.already_applied", company=job.company, title=job.title)
+        return application
+
+    def prepare(self, job: JobOpportunity) -> ApprovalRequest | None:
+        """Lê o formulário e cria/reusa a aprovação. Não clica em Submit.
+
+        Devolve ``None`` quando o portal mostra que a candidatura já existe:
+        nesse caso a candidatura é registrada e a vaga marcada SUBMITTED, sem
+        aprovação, upload ou Submit.
+        """
         if job.status not in {JobStatus.QUALIFIED, JobStatus.PENDING_APPROVAL}:
             raise ValidationError(
                 "vaga precisa estar classificada como QUALIFIED antes de abrir o Chrome"
@@ -641,8 +840,12 @@ class BrowserApplyAgent:
         if existing is not None and existing.status == "APPROVED":
             raise ValidationError("aprovação já registrada; use o modo de envio")
         page, snapshot, observation = self._open(job)
-        self._record_easy_apply(job, observation)
         try:
+            self._record_easy_apply(job, observation)
+            snapshot = snapshot_form(page)
+            if observation.already_applied or self._detect_already_applied(page, snapshot):
+                self._record_existing_application(job, snapshot, observation)
+                return None
             snapshot = self._handle_resume(page, snapshot)
             decisions = self._decide(snapshot)
             if not decisions:

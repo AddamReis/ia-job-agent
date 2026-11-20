@@ -518,6 +518,12 @@ class Orchestrator:
                     self._checkpoint(state)
 
                     approval = self.application.prepare(job)
+                    if approval is None:
+                        # Portal confirmou candidatura já existente: registrada
+                        # pelo agente, sem aprovação e sem novo envio.
+                        state.current_job["status"] = "Já candidaturada"
+                        self._checkpoint(state)
+                        continue
                     state.current_job["status"] = "Aguardando aprovação"
                     self._checkpoint(state)
                     if not self.application.confirm(approval):

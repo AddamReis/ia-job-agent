@@ -186,15 +186,17 @@ company_suppression:
 
 application:
   known_portals: ["BairesDev", "Strider"]
-  # Login automatizado com credenciais do keyring por domínio real do portal.
-  # Senha NUNCA fica aqui: use `agent portal-auth --set --domain ...`.
+  # Login automatizado por domínio real do portal. Para auth_mode=password, a
+  # senha NUNCA fica aqui: use `agent portal-auth --set --domain ...`.
   portal_auth:
     applicants.bairesdev.com:
       company: "BairesDev"
       login_url: "https://applicants.bairesdev.com/login"
-      username_selector: 'input[autocomplete="username"]'
-      password_selector: 'input[type="password"]'
-      submit_labels: ["Ingresar"]
+      auth_mode: "google"  # reusa a sessão Google do Chrome CDP; não há senha da BairesDev
+      oauth_account_email: "seu-email@gmail.com"  # só escolhe a conta; não é segredo
+      oauth_labels: ["Ingresa con Google", "Entrar com Google", "Sign in with Google"]
+      oauth_continue_labels: ["Continuar", "Continue", "Prosseguir para Applicant Site"]
+      already_applied_markers: ["Ver solicitud", "Aplicación enviada", "Candidatura enviada", "Ya te has postulado"]
       # Testes internos da plataforma já concluídos: o diálogo pós-envio é
       # informativo e NÃO deve ser confundido com dados da candidatura.
       assessment_status: "completed"

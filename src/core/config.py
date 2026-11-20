@@ -217,10 +217,37 @@ class PortalAuthConfig(BaseModel):
 
     company: str = ""
     login_url: str = ""
+    # "password" usa usuário/senha do keyring; "google" reusa a sessão Google
+    # já autenticada no Chrome CDP (OAuth), sem senha do portal.
+    auth_mode: Literal["password", "google"] = "password"
     username_selector: str = 'input[autocomplete="username"]'
     password_selector: str = 'input[type="password"]'
     submit_labels: list[str] = Field(
         default_factory=lambda: ["Ingresar", "Entrar", "Sign in", "Log in"]
+    )
+    # Rótulos do botão "Entrar com Google" na tela do portal.
+    oauth_labels: list[str] = Field(
+        default_factory=lambda: [
+            "Ingresa con Google", "Entrar com Google", "Entrar com o Google",
+            "Sign in with Google", "Continue with Google",
+        ]
+    )
+    # Não é segredo: só identifica qual conta escolher no seletor do Google.
+    oauth_account_email: str = ""
+    # Botões do consentimento/seletor de conta do Google, em ordem de uso.
+    oauth_continue_labels: list[str] = Field(
+        default_factory=lambda: [
+            "Continuar", "Continue", "Prosseguir para Applicant Site",
+            "Continue to Applicant Site", "Aceitar e continuar",
+        ]
+    )
+    # Sinais de que a candidatura JÁ existe no portal — nunca reenviar.
+    already_applied_markers: list[str] = Field(
+        default_factory=lambda: [
+            "Ver solicitud", "View application", "Aplicación enviada",
+            "Candidatura enviada", "Ya te has postulado", "Application submitted",
+            "Ver candidatura",
+        ]
     )
     login_url_marks: list[str] = Field(
         default_factory=lambda: ["/login", "/signin", "/sign-in"]
@@ -240,14 +267,14 @@ class ApplicationConfig(BaseModel):
     """Canais de candidatura e prioridade de execução (menor índice = primeiro)."""
 
     known_portals: list[str] = Field(default_factory=lambda: ["BairesDev", "Strider"])
-    # Portais onde o agente já sabe fazer login com usuário/senha do keyring.
+    # Portais onde o agente já sabe fazer login: senha no keyring ou OAuth Google.
     portal_auth: dict[str, PortalAuthConfig] = Field(
         default_factory=lambda: {
             "applicants.bairesdev.com": PortalAuthConfig(
                 company="BairesDev",
                 login_url="https://applicants.bairesdev.com/login",
-                username_selector='input[autocomplete="username"]',
-                password_selector='input[type="password"]',
+                auth_mode="google",
+                oauth_account_email="addamreis@gmail.com",
                 submit_labels=["Ingresar"],
                 assessment_status="completed",
             )
