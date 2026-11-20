@@ -29,7 +29,13 @@ from ..models.domain import (
     QualificationResult,
 )
 from ..models.schemas import ExtractedJobFacts, JobFitAssessment
-from ..shared.stack_filter import mentions_dotnet, mentions_frontend, mentions_java
+from ..shared.stack_filter import (
+    is_ai_focused,
+    mentions_ai,
+    mentions_dotnet,
+    mentions_frontend,
+    mentions_java,
+)
 from ..execution.web.linkedin_public import is_remote_public
 from ..storage.database import Repository
 
@@ -247,8 +253,8 @@ def job_side_language_reason(assessment: "JobFitAssessment") -> str:
     return reason[:180] or "a vaga exige stack diferente da especialização"
 
 
-# Veto de CORE: usa o mesmo pré-filtro determinístico do discovery. Java e
-# FrontEnd só reprovam quando são o foco; .NET/C# no título/core protege a vaga.
+# Veto de CORE: usa o mesmo pré-filtro determinístico do discovery. Java,
+# FrontEnd e AI só reprovam quando são o foco; .NET/C# no título/core protege.
 def _dotnet_core_signals(
     job: "JobOpportunity",
     facts: "ExtractedJobFacts",
@@ -286,14 +292,22 @@ def stack_mismatch_reason(
     facts: "ExtractedJobFacts",
     assessment: "JobFitAssessment | None",
 ) -> str | None:
-    """Veto semântico de core: Java/FrontEnd focados reprovam; .NET protege.
+    """Veto semântico de core: Java/FrontEnd/AI focados reprovam; .NET protege.
 
     O score não participa: é o core da vaga que não bate com a especialização.
-    Se .NET/C# é o core, Java/React/TypeScript citados como complemento não
-    geram veto — nem quando o analista marcou 'misaligned' por engano.
+    Se .NET/C# é o core, Java/React/AI citados como complemento não geram veto —
+    nem quando o analista marcou 'misaligned' por engano. No título, porém, o
+    que aparece primeiro define a função principal: 'AI Engineer (.NET)' é
+    focada em AI, enquanto 'Senior .NET Engineer with AI integration' não é.
     """
     if assessment is None:
         return None
+    # AI no título vem antes da proteção .NET: o prefixo indica a função.
+    if is_ai_focused(job.title or ""):
+        return (
+            "A vaga é focada em Inteligência Artificial/ML como função principal "
+            "do título, sem C#/.NET como core."
+        )
     explicit_dotnet, required_dotnet = _dotnet_core_signals(job, facts, assessment)
     if explicit_dotnet:
         return None
@@ -303,6 +317,10 @@ def stack_mismatch_reason(
         return (
             "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
             "sem C#/.NET."
+        )
+    if _core_matches(job, assessment, mentions_ai):
+        return (
+            "A vaga é focada em Inteligência Artificial/ML (core), sem C#/.NET."
         )
     if required_dotnet:
         return None
@@ -315,6 +333,8 @@ def stack_mismatch_reason(
             "A vaga é focada em FrontEnd (React/Angular/Vue/UI como core), "
             "sem C#/.NET."
         )
+    if any(mentions_ai(str(skill)) for skill in facts.required_skills):
+        return "A vaga exige Inteligência Artificial/ML como core, sem C#/.NET."
     if assessment.language_fit == "misaligned":
         return job_side_language_reason(assessment)
     return None

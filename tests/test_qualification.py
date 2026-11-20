@@ -6,6 +6,7 @@ from src.agents.qualification import (
     JobQualificationAgent,
     detect_currencies,
     is_remote_location,
+    stack_mismatch_reason,
 )
 from src.core.config import Settings
 from src.core.state import JobStatus
@@ -524,6 +525,27 @@ def test_level_without_specification_has_priority_over_senior():
     assert no_level.level_priority == 0
     assert senior.level_priority == 2
     assert no_level.level_priority < senior.level_priority
+
+
+def test_ai_core_is_rejected_but_complement_in_dotnet_job_is_not():
+    ai_title = _job(
+        "Brazil (Remote)", "US$ 120,000",
+        title="AI Full-stack Engineer (Next + Python)",
+    )
+    reason = stack_mismatch_reason(ai_title, _facts(), JobFitAssessment())
+    assert reason is not None and "Inteligência Artificial" in reason
+
+    generic = _job("Brazil (Remote)", "US$ 120,000", title="Software Engineer")
+    reason = stack_mismatch_reason(
+        generic, _facts(), JobFitAssessment(core_stack=["Machine Learning", "PyTorch"])
+    )
+    assert reason is not None and "Inteligência Artificial" in reason
+
+    dotnet = _job("Brazil (Remote)", "US$ 120,000", title="Senior .NET Engineer")
+    facts = _facts(required_skills=[".NET", "C#", "Azure OpenAI integration"])
+    assert stack_mismatch_reason(
+        dotnet, facts, JobFitAssessment(core_stack=[".NET", "C#"])
+    ) is None
 
 
 

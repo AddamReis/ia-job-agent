@@ -138,6 +138,7 @@ def test_focused_java_and_frontend_titles_are_discarded_early(tmp_path: Path) ->
     titles = [
         "Senior Java Developer",
         "Senior Frontend Developer",
+        "AI Full-stack Engineer (Next + Python) - Remote Work",
         ".NET Engineer",
         "Full Stack Developer (React + .NET C# WebAPI)",
     ]
