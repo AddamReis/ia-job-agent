@@ -30,6 +30,9 @@ class StubRepo:
     def list_jobs(self, status=None, limit=None) -> list[JobOpportunity]:
         return list(self.jobs)
 
+    def load_profile(self, schema):
+        return schema(years_experience=7, skills={})
+
     def update_job(self, job: JobOpportunity) -> None:
         self.updated.append(job)
 
@@ -157,3 +160,65 @@ def test_run_filters_by_company_and_counts_verdicts() -> None:
     assert target.status == JobStatus.QUALIFIED
     assert other.status == JobStatus.DISCOVERED
     assert rejected.status == JobStatus.REJECTED_BY_FILTER
+
+
+def test_tech_lead_in_description_is_rejected() -> None:
+    job = _job("Senior Full Stack Developer (ReactJS + .NET C# WebAPI)")
+    job.description = DESCRIPTION + (
+        " We are seeking a Full-Stack Tech Lead Developer. "
+        "Lead smaller project teams and mentor junior developers."
+    )
+    result = _agent([job]).qualify(job, TRUSTED_PORTALS["BairesDev"])
+
+    assert result.decision == "SKIP"
+    assert "liderança" in (result.hard_reject_reason or "").lower()
+    assert result.score == 0
+
+
+def test_ten_years_required_is_rejected_but_five_is_allowed() -> None:
+    senior = _job("Senior .NET Developer")
+    senior.description = DESCRIPTION.replace(
+        "5+ years of experience", "at least 10 years of professional experience"
+    )
+    result = _agent([senior]).qualify(senior, TRUSTED_PORTALS["BairesDev"])
+    assert result.decision == "SKIP"
+    assert "10+ anos" in (result.hard_reject_reason or "")
+
+    normal = _job("Senior .NET Developer")
+    result = _agent([normal]).qualify(normal, TRUSTED_PORTALS["BairesDev"])
+    assert result.decision == "APPLY"
+
+
+def test_empty_description_is_not_approved() -> None:
+    job = _job("Senior Microsoft Teams & .NET Developer", description="")
+    result = _agent([job]).qualify(job, TRUSTED_PORTALS["BairesDev"])
+
+    assert result.decision == "SKIP"
+    assert "sem descrição" in (result.hard_reject_reason or "").lower()
+    assert result.score == 0
+
+
+def test_lead_the_creation_is_not_people_leadership() -> None:
+    """Posse técnica do código não é liderança de equipe."""
+    job = _job("Senior Microsoft Teams & .NET Developer")
+    job.description = DESCRIPTION.replace(
+        "100% remote work (from anywhere).",
+        "You will lead the creation of collaborative applications and serve as a "
+        "key technical driver. 100% remote work (from anywhere).",
+    )
+    result = _agent([job]).qualify(job, TRUSTED_PORTALS["BairesDev"])
+
+    assert result.decision == "APPLY"
+    assert result.score == 100
+
+
+def test_company_age_is_not_required_experience() -> None:
+    job = _job("Senior .NET Developer")
+    job.description = (
+        DESCRIPTION
+        + " BairesDev has been leading the way for over 15 years. We deliver "
+        "cutting-edge solutions worldwide."
+    )
+    result = _agent([job]).qualify(job, TRUSTED_PORTALS["BairesDev"])
+
+    assert result.decision == "APPLY"

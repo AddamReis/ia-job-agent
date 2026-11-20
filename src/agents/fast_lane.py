@@ -7,8 +7,10 @@ as fases seguintes vejam a vaga como QUALIFIED ou REJECTED_BY_FILTER.
 
 O título é a fonte autoritativa da função principal: .NET/C# precisa aparecer
 nele. Java, FrontEnd ou AI no título reprovam antes de qualquer outra checagem,
-mesmo que a descrição cite .NET como tecnologia complementar. Nenhuma
-candidatura é submetida aqui.
+mesmo que a descrição cite .NET como tecnologia complementar. A descrição
+também pode vetoar: liderança explícita de equipe, anos acima do perfil (+2) ou
+ausência de descrição (sem evidência para validar). Nenhuma candidatura é
+submetida aqui.
 """
 from __future__ import annotations
 
@@ -18,7 +20,8 @@ from typing import Any
 from ..core.config import Settings
 from ..core.logging import log_event
 from ..core.state import JobStatus
-from ..models.domain import Company, JobOpportunity, QualificationResult
+from ..execution.profile.builder import build_profile
+from ..models.domain import CandidateProfile, Company, JobOpportunity, QualificationResult
 from ..shared.stack_filter import is_off_stack_title, mentions_dotnet
 from ..storage.database import Repository
 from .qualification import (
@@ -36,6 +39,30 @@ _WEIGHTS: dict[str, int] = {
     "currency": 15,
     "language": 10,
 }
+
+# Vetoes duros: liderança de PESSOAS e anos acima do perfil. "Lead the
+# creation" é posse técnica do código e NÃO é liderança — por isso o padrão
+# exige um objeto "teams". Mentoria sozinha também não conta.
+_LEADERSHIP_TITLE_RE = re.compile(
+    r"\b(?:manager|head\s+of|director|vice\s+president|vp|"
+    r"tech(?:nical)?\s+lead(?:er)?|team\s+lead(?:er)?|lead\s+developer)\b",
+    re.I,
+)
+_LEADERSHIP_DESCRIPTION_RE = re.compile(
+    r"\b(?:tech(?:nical)?\s+lead(?:er)?|team\s+lead(?:er)?|"
+    r"lead\s+(?:[\w-]+\s+){0,3}teams?|"
+    r"leading\s+(?:[\w-]+\s+){0,2}teams?|"
+    r"(?:engineering|development|software)\s+manager|"
+    r"head\s+of\s+engineering)\b",
+    re.I,
+)
+# "15 years. We deliver..." não casa: o ponto impede confundir a idade da
+# empresa com a exigência de experiência do candidato.
+_YEARS_RE = re.compile(
+    r"(\d{1,2})\s*\+?\s*years?[^\n.]{0,60}?experience|"
+    r"experience[^\n.]{0,40}?(\d{1,2})\s*\+?\s*years?",
+    re.I,
+)
 
 # Papéis aceitos pelo perfil. Chaves são os valores usados em
 # ``trusted_portal_config["roles"]``; valores desconhecidos caem em substring.
@@ -85,6 +112,16 @@ def _role_in_title(role: str, title: str) -> bool:
     return bool(lowered) and lowered in (title or "").lower()
 
 
+def _required_years(description: str) -> int | None:
+    """Maior exigência de anos do candidato citada na descrição."""
+    valores = []
+    for match in _YEARS_RE.finditer(description or ""):
+        valor = match.group(1) or match.group(2)
+        if valor:
+            valores.append(int(valor))
+    return max(valores) if valores else None
+
+
 def _foreign_language_required(description: str) -> str | None:
     """ Retorna o idioma estrangeiro exigido, ignorando menções informais. """
     for sentence in re.split(r"[.\n]", description or ""):
@@ -104,10 +141,17 @@ class FastLaneAgent:
         repo: Repository,
         settings: Settings,
         company_name: str = "BairesDev",
+        years_experience: int | None = None,
     ) -> None:
         self.repo = repo
         self.settings = settings
         self.company_name = company_name
+        if years_experience is None:
+            profile = repo.load_profile(CandidateProfile)
+            if profile is None:
+                profile = build_profile(settings)
+            years_experience = profile.years_experience
+        self.years_experience = years_experience
 
     def load_config(self) -> tuple[Company, dict[str, Any]]:
         company = self.repo.get_company_by_name(self.company_name)
@@ -194,13 +238,35 @@ class FastLaneAgent:
         else:
             checks["language"] = (True, "Idioma compatível.")
 
-        score = sum(_WEIGHTS[key] for key, (ok, _) in checks.items() if ok)
-        breakdown = {
-            key: (_WEIGHTS[key] if checks[key][0] else 0) for key in _WEIGHTS
-        }
+        # Vetoes duros — o classificador completo também barra liderança
+        # explícita. Aqui eles são determinísticos e leem a descrição salva.
+        vetoes: list[str] = []
+        if not description.strip():
+            vetoes.append(
+                "Vaga sem descrição disponível — não há evidência para validar "
+                "remoto, moeda e idioma; revalidar na próxima descoberta."
+            )
+        if _LEADERSHIP_TITLE_RE.search(title) or _LEADERSHIP_DESCRIPTION_RE.search(description):
+            vetoes.append(
+                "Cargo de liderança explícita (tech lead/team lead/manager), fora do perfil."
+            )
+        required = _required_years(description)
+        if required is not None and required > self.years_experience + 2:
+            vetoes.append(
+                f"Exige {required}+ anos de experiência; o perfil tem "
+                f"{self.years_experience}."
+            )
+
         reasons = [message for ok, message in checks.values() if ok]
-        failures = [message for ok, message in checks.values() if not ok]
+        failures = vetoes + [message for ok, message in checks.values() if not ok]
         decision = "SKIP" if failures else "APPLY"
+        # Vaga com veto não recebe score alto, mesmo que os cinco checks
+        # determinísticos tenham passado (caso da descrição vazia).
+        score = 0 if vetoes else sum(_WEIGHTS[key] for key, (ok, _) in checks.items() if ok)
+        breakdown = {
+            key: (0 if vetoes else (_WEIGHTS[key] if checks[key][0] else 0))
+            for key in _WEIGHTS
+        }
         result = QualificationResult(
             score=score,
             breakdown=breakdown,
