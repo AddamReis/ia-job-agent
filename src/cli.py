@@ -17,6 +17,7 @@ from .adapters.scheduler import LocalScheduler
 from .agents.browser_apply import BrowserApplyAgent
 from .agents.company_suppression import CompanySuppressionAgent
 from .agents.discovery import DiscoveryAgent
+from .agents.fast_lane import FastLaneAgent
 from .agents.orchestrator import Orchestrator
 from .agents.qualification import job_side_language_reason
 from .core.config import Settings
@@ -418,6 +419,46 @@ def reclassify(
         console.print(f"[yellow]Atenção: {orchestrator.qualification.last_error}[/yellow]")
     console.print(
         f"[green]Reclassificação concluída: {aprovadas} vaga(s) qualificada(s).[/green]"
+    )
+
+
+@app.command("fast-lane")
+def fast_lane(
+    company: str = typer.Option(
+        "BairesDev", "--company", "-c", help="Nome do portal confiável"
+    ),
+    statuses: str = typer.Option(
+        "DISCOVERED", "--statuses", help="Statuses a classificar, separados por vírgula"
+    ),
+    limit: int = typer.Option(
+        0, "--limit", "-n", help="0 = todas as vagas elegíveis (padrão)"
+    ),
+) -> None:
+    """Classifica vagas de portal confiável com validação determinística, sem LLM."""
+    try:
+        alvos = [
+            JobStatus(item.strip().upper()) for item in statuses.split(",") if item.strip()
+        ]
+    except ValueError as exc:
+        console.print(f"[red]Status inválido: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    settings = _settings()
+    repo = Repository(
+        settings.resolve(settings.storage.database),
+        known_portals=settings.application.known_portals,
+    )
+    agent = FastLaneAgent(repo, settings, company_name=company)
+    try:
+        counters = agent.run(statuses=alvos, limit=limit or None)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[bold]Fast lane {company}[/bold]: {counters['total']} vaga(s) · "
+        f"[green]{counters['qualified']} aprovada(s)[/green] · "
+        f"[yellow]{counters['rejected']} reprovada(s)[/yellow]."
     )
 
 
