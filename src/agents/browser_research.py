@@ -441,9 +441,10 @@ class BrowserResearchAgent:
                 # Ranking por contribuição marginal: mostra quais termos ainda
                 # trazem vagas que os anteriores não cobriram, e quais só
                 # repetem o que já estava no banco.
+                # Sem trace_id explícito: log_event resolve pelo ContextVar,
+                # que é onde o DiscoveryAgent registra a execução atual.
                 log_event(
                     "query_yield_ranking",
-                    trace_id=self.trace_id,
                     queries_total=len(queries),
                     queries_executed=len(self.last_yields),
                     total_new=total,
