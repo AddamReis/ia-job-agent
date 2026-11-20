@@ -51,8 +51,37 @@ _EASY_APPLY_LABELS = (
 )
 _EXTERNAL_APPLY_LABELS = (
     "Apply on company website", "Apply externally", "Solicitar no site da empresa",
+    # O Chrome do operador está em pt-BR: o LinkedIn mostra "Candidatar-se"
+    # (span, não botão) e redireciona para o portal da empresa.
+    "Candidatar-se", "Candidatar", "Candidatura externa",
 )
 _APPLY_LABELS = _EASY_APPLY_LABELS + _EXTERNAL_APPLY_LABELS
+
+# Portais conhecidos onde o clique no LinkedIn leva a uma página de descrição
+# com um SEGUNDO botão ("Apply"/"Aplicar") antes do formulário.
+_EXTERNAL_PORTALS = ("bairesdev.com", "strider.com")
+
+# Sinais de que o portal externo está pedindo login — nesse caso a candidatura
+# depende de ação humana (credenciais/2FA), nunca de automação.
+_LOGIN_MARKS = (
+    "/login", "/signin", "/sign-in", "sign in", "iniciar sesión",
+    "entrar", "ingresar", "iniciar sessão", "iniciar sessao",
+)
+
+
+def _is_login_page(url: str, text: str) -> bool:
+    """Detecta tela de autenticação no portal externo."""
+    lowered_url = (url or "").lower()
+    if any(mark in lowered_url for mark in ("/login", "/signin", "/sign-in")):
+        return True
+    lowered = (text or "").lower()
+    credential_marks = (
+        "senha", "password", "código de acesso", "codigo de acesso",
+        "e-mail ou telefone", "forgot password", "olvidaste tu usuario",
+    )
+    return any(mark in lowered for mark in _LOGIN_MARKS) and any(
+        mark in lowered for mark in credential_marks
+    )
 
 
 @dataclass
@@ -129,6 +158,42 @@ class BrowserApplyAgent:
             raise ValidationError("vaga sem ID real do LinkedIn; nunca usar URL sintética")
         return f"https://www.linkedin.com/jobs/view/{match.group(1)}"
 
+    @staticmethod
+    def _apply_candidates(page: Any) -> list[tuple[int, str, str, Any]]:
+        """Locators visíveis dos CTAs de candidatura, com sua posição Y.
+
+        Inclui rótulos em inglês e português. Elementos da barra lateral
+        (recomendações de outras vagas) aparecem depois e são descartados pela
+        ordenação por posição feita em ``_open``.
+        """
+        candidatos: list[tuple[int, str, str, Any]] = []
+        vistos: set[str] = set()
+        for label in _APPLY_LABELS:
+            for origem, locator in (
+                ("role", page.get_by_role("button", name=re.compile(re.escape(label), re.I))),
+                ("text", page.get_by_text(label, exact=True)),
+            ):
+                for indice in range(min(locator.count(), 3)):
+                    alvo = locator.nth(indice)
+                    try:
+                        if not alvo.is_visible():
+                            continue
+                        caixa = alvo.bounding_box() or {}
+                        altura = float(caixa.get("height") or 0)
+                        largura = float(caixa.get("width") or 0)
+                        if altura <= 0 or largura <= 0:
+                            continue
+                        chave = f"{label}:{round(caixa['y'])}:{round(caixa['x'])}"
+                        if chave in vistos:
+                            continue
+                        vistos.add(chave)
+                        candidatos.append((int(caixa["y"]), label, origem, alvo))
+                    except Exception:
+                        continue
+                if candidatos and any(c[1] == label for c in candidatos):
+                    break
+        return candidatos
+
     def _open(
         self, job: JobOpportunity
     ) -> tuple[Any, dict[str, Any], ApplyObservation]:
@@ -161,17 +226,25 @@ class BrowserApplyAgent:
 
         observation = ApplyObservation(None)
         clicked = False
-        for label in _APPLY_LABELS:
+        candidatos = self._apply_candidates(page)
+        # O CTA da vaga fica no topo; a barra lateral repete "Candidatura
+        # simplificada" em cards de outras vagas. Escolher o primeiro texto
+        # encontrado clicava na vaga errada — por isso ordenamos por posição.
+        candidatos.sort(key=lambda item: item[0])
+        for posicao, label, origem, locator in candidatos:
             try:
-                locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
-                if locator.count() == 0:
-                    continue
                 before = {id(p) for p in page.context.pages}
-                locator.first.click()
+                locator.click()
                 clicked = True
                 easy = label in _EASY_APPLY_LABELS
                 observation = ApplyObservation(easy, label)
-                log_event("browser_apply_clicked", label=label, external_id=job.external_id)
+                log_event(
+                    "browser_apply_clicked",
+                    label=label,
+                    locator=origem,
+                    y=posicao,
+                    external_id=job.external_id,
+                )
                 page.wait_for_timeout(1800)
                 new_pages = [p for p in page.context.pages if id(p) not in before]
                 if new_pages:
@@ -191,9 +264,70 @@ class BrowserApplyAgent:
                 observation = ApplyObservation(True, "texto_easy_apply")
             elif has_external_text:
                 observation = ApplyObservation(False, "texto_apply_externo")
-        if clicked:
-            snapshot = snapshot_form(page)
+        try:
+            if clicked and any(
+                portal in domain_of(page.url) for portal in _EXTERNAL_PORTALS
+            ):
+                page = self._advance_external_portal(page)
+            if clicked:
+                snapshot = snapshot_form(page)
+                self._ensure_no_login(page, snapshot)
+        except Exception:
+            self.browser.close_tab(page)
+            raise
         return page, snapshot, observation
+
+    @staticmethod
+    def _ensure_no_login(page: Any, snapshot: dict[str, Any]) -> None:
+        """Barreira: portal em tela de login exige ação humana, não automação."""
+        if _is_login_page(
+            str(snapshot.get("url", "") or page.url),
+            str(snapshot.get("text", "") or ""),
+        ):
+            raise HumanActionRequired(
+                "login",
+                "o portal da empresa pediu login/verificação; faça login no "
+                "Chrome debug antes de candidatar",
+            )
+
+    def _advance_external_portal(self, page: Any) -> Any:
+        """Portais conhecidos abrem o form só após um segundo clique.
+
+        Na BairesDev, o LinkedIn redireciona para a página da vaga, que exige
+        clicar em "Apply"/"Aplicar" para revelar o formulário. Se esse clique
+        cair no login, a barreira abaixo interrompe e pede ação humana.
+        """
+        snapshot = snapshot_form(page)
+        self._ensure_no_login(page, snapshot)
+        if snapshot.get("fields"):
+            return page
+        for label in ("Aplicar", "Apply", "Apply now!", "Candidatar-se", "Enviar candidatura"):
+            locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
+            if locator.count() == 0:
+                locator = page.get_by_text(label, exact=True)
+            if locator.count() == 0:
+                continue
+            alvo = locator.first
+            try:
+                if not alvo.is_visible():
+                    continue
+            except Exception:
+                continue
+            antes = {id(p) for p in page.context.pages}
+            alvo.click()
+            page.wait_for_timeout(3000)
+            novas = [p for p in page.context.pages if id(p) not in antes]
+            if novas:
+                for extra in novas[1:]:
+                    self.browser.close_tab(extra)
+                self.browser.close_tab(page)
+                page = novas[0]
+                page.wait_for_timeout(2000)
+            log_event("browser_apply_portal_advanced", label=label, url=page.url[:160])
+            snapshot = snapshot_form(page)
+            self._ensure_no_login(page, snapshot)
+            return page
+        return page
 
     def _record_easy_apply(self, job: JobOpportunity, observation: ApplyObservation) -> None:
         """Persiste o achado somente para vagas já classificadas como válidas."""
