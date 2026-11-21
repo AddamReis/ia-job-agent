@@ -36,6 +36,11 @@ src/agents/    → discovery | classification | apply | fast_lane (cada um com e
   seguintes) + 1h de sobreposição e o watermark da última execução concluída.
 - O filtro nativo do LinkedIn continua em 24h (`day`); se a janela passar disso, o
   agente troca automaticamente para `week` (parametrizável).
+- **Uma busca por vez**: a tabela `run_locks` grava o dono da rodada e um heartbeat a
+  cada 30s. Outra execução (slot seguinte ou disparo manual) fica em standby, consulta
+  a trava a cada 2s e corre logo após a liberação. Se o heartbeat parar por 15 min
+  (restart no meio da rodada), a trava é recuperada e as execuções/watermarks órfãos
+  viram `ABANDONED` — sem dois processos varrendo o LinkedIn ao mesmo tempo.
 - Portais confiáveis são **flags na tabela de empresas** (`is_trusted_portal`,
   `trusted_portal_config`), sem código específico por empresa.
 - Deploys separados em `deploy/`; veja `deploy/README.md`.
