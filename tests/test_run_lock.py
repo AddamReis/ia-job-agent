@@ -54,6 +54,60 @@ def test_lock_waits_until_previous_owner_releases(tmp_path) -> None:
     assert repo.get_run_lock("discovery") is None
 
 
+def test_only_one_owner_under_concurrent_acquisition(tmp_path) -> None:
+    repo = Repository(tmp_path / "agent.db")
+    attempts = 4
+    barrier = threading.Barrier(attempts)
+    finished = threading.Event()
+    counter_lock = threading.Lock()
+    remaining = attempts
+    winners: list[str] = []
+    errors: list[BaseException] = []
+
+    def mark_done() -> None:
+        nonlocal remaining
+        with counter_lock:
+            remaining -= 1
+            if remaining == 0:
+                finished.set()
+
+    def attempt(index: int) -> None:
+        owner = f"worker-{index}"
+        lock = RunLock(
+            repo,
+            name="discovery",
+            owner=owner,
+            stale_after_seconds=900,
+            heartbeat_seconds=30,
+            wait_seconds=0,  # tentativa única: quem não entrar, desiste
+            poll_seconds=0.01,
+            sleep=lambda _: None,
+        )
+        try:
+            barrier.wait()
+            lock.acquire()
+        except RunLockTimeout:
+            pass
+        except BaseException as exc:
+            errors.append(exc)
+        else:
+            winners.append(owner)
+            finished.wait(3)  # mantém a trava até todos os outros desistirem
+        finally:
+            lock.release()
+            mark_done()
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(attempts)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert len(winners) == 1
+    assert repo.get_run_lock("discovery") is None
+
+
 def test_stale_lock_is_reclaimed_and_orphans_marked(tmp_path) -> None:
     repo = Repository(tmp_path / "agent.db")
     old = datetime.now(timezone.utc) - timedelta(seconds=1200)
