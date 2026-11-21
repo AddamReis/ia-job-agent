@@ -45,6 +45,8 @@ class ExecutionStatus(str, Enum):
     STOPPED = "STOPPED"
     COMPLETED = "COMPLETED"
     ERROR = "ERROR"
+    # Rodada interrompida por restart/perda de heartbeat, sem conclusão.
+    ABANDONED = "ABANDONED"
 
 
 _ALLOWED: dict[JobStatus, set[JobStatus]] = {

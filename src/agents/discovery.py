@@ -15,6 +15,7 @@ from ..core.config import Settings
 from ..core.events import EventBus
 from ..core.logging import configure_logging, log_event, set_trace_id
 from ..core.state import ExecutionStatus
+from ..execution.run_lock import RunLock
 from ..execution.web.linkedin_public import LinkedInPublicBrowser
 from ..models.domain import ExecutionHistory
 from ..shared.discovery_window import DiscoveryWindow, compute_window
@@ -89,89 +90,110 @@ class DiscoveryAgent:
         now: datetime | None = None,
         dry_run: bool = False,
     ) -> DiscoveryResult:
-        window = self.window(slot, now)
         trace = trace_id or str(uuid4())
         set_trace_id(trace)
         self.research.trace_id = trace
-        log_event("discovery_started", slot=window.slot, trace_id=trace, window=window.describe())
-        if self.bus:
-            self.bus.emit("discovery.started", slot=window.slot, trace_id=trace)
-
-        history = ExecutionHistory(
-            id=trace,
-            trace_id=trace,
-            phase="discovery",
-            started_at=window.reference_time,
-            status=ExecutionStatus.RUNNING.value,
-        )
-        self.repo.create_execution(history)
-        self.repo.save_discovery_watermark(
-            window.slot,
-            {
-                "status": ExecutionStatus.RUNNING.value,
-                "started_at": window.reference_time.isoformat(),
-                "cutoff": window.cutoff.isoformat(),
-                "trace_id": trace,
-            },
+        cfg = self.settings.discovery_schedule
+        lock = RunLock(
+            self.repo,
+            name=cfg.lock_name,
+            owner=trace,
+            stale_after_seconds=cfg.lock_stale_after_seconds,
+            heartbeat_seconds=cfg.lock_heartbeat_seconds,
+            wait_seconds=cfg.lock_wait_seconds,
+            poll_seconds=cfg.lock_poll_seconds,
         )
 
-        jobs_new = 0
-        status = ExecutionStatus.COMPLETED.value
-        try:
-            if not dry_run:
-                jobs_new = self.research.run(
-                    reference_time=window.reference_time,
-                    cutoff=window.cutoff,
-                    time_filter=window.time_filter,
-                )
-        except Exception as exc:
-            status = ExecutionStatus.ERROR.value
-            history.errors.append(str(exc))
-            log_event("discovery_failed", trace_id=trace, error=str(exc))
-            raise
-        finally:
-            finished = datetime.now()
-            history.finished_at = finished
-            history.status = status
-            history.jobs_discovered = jobs_new
-            history.duration_seconds = (
-                finished - window.reference_time.replace(tzinfo=None)
-            ).total_seconds()
-            self.repo.update_execution(history)
+        # A janela é calculada SÓ depois de adquirir a trava: uma rodada em
+        # standby usa o instante em que realmente começa, não o pedido.
+        with lock:
+            window = self.window(slot, now)
+            log_event(
+                "discovery_started",
+                slot=window.slot,
+                trace_id=trace,
+                window=window.describe(),
+            )
+            if self.bus:
+                self.bus.emit("discovery.started", slot=window.slot, trace_id=trace)
+
+            history = ExecutionHistory(
+                id=trace,
+                trace_id=trace,
+                phase="discovery",
+                started_at=window.reference_time,
+                status=ExecutionStatus.RUNNING.value,
+            )
+            self.repo.create_execution(history)
             self.repo.save_discovery_watermark(
                 window.slot,
                 {
-                    "status": status,
+                    "status": ExecutionStatus.RUNNING.value,
                     "started_at": window.reference_time.isoformat(),
-                    "finished_at": finished.isoformat(),
                     "cutoff": window.cutoff.isoformat(),
-                    "time_filter": window.time_filter,
-                    "window_source": window.source,
                     "trace_id": trace,
-                    "jobs_new": jobs_new,
-                    "errors": history.errors,
                 },
             )
-            log_event(
-                "discovery_finished",
+
+            jobs_new = 0
+            status = ExecutionStatus.COMPLETED.value
+            try:
+                if not dry_run:
+                    jobs_new = self.research.run(
+                        reference_time=window.reference_time,
+                        cutoff=window.cutoff,
+                        time_filter=window.time_filter,
+                    )
+            except Exception as exc:
+                status = ExecutionStatus.ERROR.value
+                history.errors.append(str(exc))
+                log_event("discovery_failed", trace_id=trace, error=str(exc))
+                raise
+            finally:
+                finished = datetime.now()
+                history.finished_at = finished
+                history.status = status
+                history.jobs_discovered = jobs_new
+                history.duration_seconds = (
+                    finished - window.reference_time.replace(tzinfo=None)
+                ).total_seconds()
+                self.repo.update_execution(history)
+                self.repo.save_discovery_watermark(
+                    window.slot,
+                    {
+                        "status": status,
+                        "started_at": window.reference_time.isoformat(),
+                        "finished_at": finished.isoformat(),
+                        "cutoff": window.cutoff.isoformat(),
+                        "time_filter": window.time_filter,
+                        "window_source": window.source,
+                        "trace_id": trace,
+                        "jobs_new": jobs_new,
+                        "errors": history.errors,
+                    },
+                )
+                log_event(
+                    "discovery_finished",
+                    slot=window.slot,
+                    trace_id=trace,
+                    jobs_new=jobs_new,
+                    status=status,
+                )
+                if self.bus:
+                    self.bus.emit(
+                        "discovery.finished", jobs_new=jobs_new, status=status
+                    )
+
+            return DiscoveryResult(
                 slot=window.slot,
                 trace_id=trace,
+                reference_time=window.reference_time,
+                cutoff=window.cutoff,
+                time_filter=window.time_filter,
+                window_source=window.source,
                 jobs_new=jobs_new,
                 status=status,
             )
-            if self.bus:
-                self.bus.emit("discovery.finished", jobs_new=jobs_new, status=status)
-
-        return DiscoveryResult(
-            slot=window.slot,
-            trace_id=trace,
-            reference_time=window.reference_time,
-            cutoff=window.cutoff,
-            time_filter=window.time_filter,
-            window_source=window.source,
-            jobs_new=jobs_new,
-            status=status,
-        )
 
 
 __all__ = ["DiscoveryAgent", "DiscoveryResult"]

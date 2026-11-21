@@ -60,6 +60,12 @@ discovery_schedule:
   overlap_buffer_minutes: 60      # cobre execução de 40–60 min
   use_last_watermark: true
   auto_widen_time_filter: true    # se o cutoff passar de 24h, usa "week"
+  # Uma busca por vez; a próxima espera e roda em seguida (heartbeat deduz restart).
+  lock_name: "discovery"
+  lock_stale_after_seconds: 900   # 15 min sem heartbeat => execução órfã
+  lock_heartbeat_seconds: 30
+  lock_wait_seconds: 3600         # tempo máximo em standby
+  lock_poll_seconds: 2            # verifica a trava a cada 2s ao esperar
 
 search:
   # Fonte padrao: browser publico. O celular entra so na candidatura apos aprovacao.

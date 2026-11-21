@@ -93,6 +93,13 @@ class DiscoveryScheduleConfig(BaseModel):
     use_last_watermark: bool = True
     # Se o cutoff ficar mais antigo que o filtro nativo, usa "week".
     auto_widen_time_filter: bool = True
+    # Execução única: uma busca por vez. A seguinte fica em standby e corre
+    # logo que a anterior libera a trava.
+    lock_name: str = "discovery"
+    lock_stale_after_seconds: int = 900
+    lock_heartbeat_seconds: int = 30
+    lock_wait_seconds: int = 3600
+    lock_poll_seconds: int = 2
 
 
 class SearchConfig(BaseModel):

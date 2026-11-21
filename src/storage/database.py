@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Collection
 from typing import Any, Iterator
@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from ..core.state import JobStatus
+from ..core.state import ExecutionStatus, JobStatus
 from ..shared.seed import TRUSTED_PORTALS
 from ..models.domain import (
     AnswerRecord,
@@ -104,6 +104,16 @@ class ExecutionRow(Base):
     started_at: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="RUNNING")
     data: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class RunLockRow(Base):
+    """Trava persistente: no máximo um dono por serviço (ex.: ``discovery``)."""
+
+    __tablename__ = "run_locks"
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    acquired_at: Mapped[str] = mapped_column(String, nullable=False)
+    renewed_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class DailyLimitRow(Base):
@@ -888,6 +898,131 @@ class Repository:
                 return False
             row.submitted -= 1
             return True
+
+    # ---- travamento de execução (uma busca por vez) ----
+    def try_acquire_run_lock(
+        self,
+        name: str,
+        owner: str,
+        *,
+        stale_after_seconds: int,
+        now: datetime | None = None,
+    ) -> tuple[bool, bool, str | None]:
+        """Tenta tomar a trava. Retorna ``(adquiriu, recuperou_stale, dono_anterior)``.
+
+        A escrita é atômica em SQLite e Postgres: insere a linha ou substitui
+        apenas uma trava cujo heartbeat parou há ``stale_after_seconds``.
+        """
+        current = now or datetime.now(timezone.utc)
+        current_iso = current.isoformat()
+        stale_iso = (current - timedelta(seconds=stale_after_seconds)).isoformat()
+        statement = text(
+            "INSERT INTO run_locks (name, owner, acquired_at, renewed_at) "
+            "VALUES (:name, :owner, :acquired, :renewed) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "owner=excluded.owner, acquired_at=excluded.acquired_at, "
+            "renewed_at=excluded.renewed_at "
+            "WHERE run_locks.renewed_at < :stale"
+        )
+        with self.Session() as session:
+            with session.begin():
+                existing = session.get(RunLockRow, name)
+                previous_owner = existing.owner if existing is not None else None
+                result = session.execute(
+                    statement,
+                    {
+                        "name": name,
+                        "owner": owner,
+                        "acquired": current_iso,
+                        "renewed": current_iso,
+                        "stale": stale_iso,
+                    },
+                )
+                acquired = result.rowcount > 0
+                reclaimed = acquired and previous_owner not in (None, owner)
+                return acquired, reclaimed, previous_owner
+
+    def renew_run_lock(
+        self, name: str, owner: str, *, now: datetime | None = None
+    ) -> bool:
+        """Renova o heartbeat somente se esta instância ainda for a dona."""
+        current = (now or datetime.now(timezone.utc)).isoformat()
+        statement = (
+            update(RunLockRow)
+            .where(RunLockRow.name == name, RunLockRow.owner == owner)
+            .values(renewed_at=current)
+        )
+        with self.Session() as session:
+            with session.begin():
+                return session.execute(statement).rowcount > 0
+
+    def release_run_lock(self, name: str, owner: str) -> bool:
+        statement = text("DELETE FROM run_locks WHERE name = :name AND owner = :owner")
+        with self.Session() as session:
+            with session.begin():
+                return session.execute(statement, {"name": name, "owner": owner}).rowcount > 0
+
+    def get_run_lock(self, name: str) -> dict[str, str] | None:
+        with self.session() as session:
+            row = session.get(RunLockRow, name)
+            if row is None:
+                return None
+            return {
+                "name": row.name,
+                "owner": row.owner,
+                "acquired_at": row.acquired_at,
+                "renewed_at": row.renewed_at,
+            }
+
+    @staticmethod
+    def _aware(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    def mark_orphan_executions(self, cutoff: datetime) -> int:
+        """Marca rodadas RUNNING antigas como ABANDONED após reclaim da trava."""
+        limit = self._aware(cutoff)
+        changed = 0
+        with self.session() as session:
+            rows = session.scalars(
+                select(ExecutionRow).where(
+                    ExecutionRow.status == ExecutionStatus.RUNNING.value
+                )
+            ).all()
+            for row in rows:
+                try:
+                    started = self._aware(datetime.fromisoformat(row.started_at))
+                except (TypeError, ValueError):
+                    continue
+                if started >= limit:
+                    continue
+                data = json.loads(row.data)
+                data["status"] = ExecutionStatus.ABANDONED.value
+                row.status = ExecutionStatus.ABANDONED.value
+                row.data = json.dumps(data, ensure_ascii=False, default=str)
+                changed += 1
+        return changed
+
+    def mark_orphan_watermarks(self, cutoff: datetime) -> int:
+        """Same cleanup para watermarks RUNNING deixados por restart."""
+        limit = self._aware(cutoff)
+        changed = 0
+        with self.session() as session:
+            rows = session.scalars(select(DiscoveryWatermarkRow)).all()
+            for row in rows:
+                data = json.loads(row.data)
+                if data.get("status") != ExecutionStatus.RUNNING.value:
+                    continue
+                try:
+                    started = self._aware(datetime.fromisoformat(str(data["started_at"])))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if started >= limit:
+                    continue
+                data["status"] = ExecutionStatus.ABANDONED.value
+                row.data = json.dumps(data, ensure_ascii=False, default=str)
+                row.updated_at = datetime.now().isoformat()
+                changed += 1
+        return changed
 
     # ---- execuções e checkpoint ----
     def create_execution(self, history: ExecutionHistory) -> None:

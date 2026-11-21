@@ -56,6 +56,12 @@ discovery_schedule:
   overlap_buffer_minutes: 60
   use_last_watermark: true
   auto_widen_time_filter: true
+  # Uma busca por vez; a próxima espera e roda em seguida.
+  lock_name: "discovery"
+  lock_stale_after_seconds: 900
+  lock_heartbeat_seconds: 30
+  lock_wait_seconds: 3600
+  lock_poll_seconds: 2
 
 search:
   # Fonte padrao: browser publico. Celular so na candidatura apos aprovacao.
