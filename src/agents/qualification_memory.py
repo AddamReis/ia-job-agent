@@ -136,9 +136,12 @@ class QualificationMemory:
         return 0
 
     def record_reclassification(
-        self, before: JobOpportunity, after: JobOpportunity
+        self, before: JobOpportunity | JobStatus, after: JobOpportunity
     ) -> int:
-        anterior = getattr(before.status, "value", before.status)
+        # A reclassificação em lote guarda apenas o status anterior (enum),
+        # enquanto outros chamadores passam a vaga completa. Aceitar os dois.
+        original = getattr(before, "status", before)
+        anterior = getattr(original, "value", original)
         atual = getattr(after.status, "value", after.status)
         if anterior == JobStatus.REJECTED_BY_FILTER.value and atual == JobStatus.QUALIFIED.value:
             return self.record(

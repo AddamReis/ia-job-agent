@@ -119,8 +119,8 @@ search:
   # So classifica como EXPIRED apos 24h (auditoria/historico, fase de testes).
   expired_after_hours: 24
   require_explicit_recency: true
-  # Moedas elegíveis: so USD/EUR. Salario nao entra no score, mas a moeda
-  # filtra: BRL/outras reprovam; Brasil/PT-BR exige USD explicito.
+  # Moedas elegíveis: so USD/EUR. Salario nao entra no score; a moeda so filtra
+  # quando explicita (BRL/CHF/outras reprovam). Ausencia de faixa e neutra.
   currencies: ["USD", "EUR"]
   require_salary: false   # legado: nao usar para ligar/desligar o filtro de moeda
   # 100% remoto. Hibrido/presencial sao rejeitados.
@@ -146,7 +146,7 @@ qualification:
     onsite_in_unsupported_country: true
     unsupported_language: true
     non_remote: true
-    # Moeda e filtro: USD/EUR; nacional/PT-BR sem prova explicita reprova.
+    # Moeda e filtro apenas quando explicita: USD/EUR aprovam, outras reprovam.
     salary_currency_mismatch: true
     stale_posting: true
     technology_mismatch: true
@@ -164,7 +164,7 @@ eligibility:
   accepted_languages: ["english", "portuguese", "spanish"]
   # Legado (nao usado para rejeitar): apenas referencia informativa.
   languages:
-    english: "intermediate"
+    english: "C1/fluent"
     portuguese: "native"
     spanish: "intermediate"
   # Países onde você pode trabalhar sem visto/sponsorship.

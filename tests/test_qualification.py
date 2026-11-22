@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 from src.agents.qualification import (
     JobQualificationAgent,
+    currency_rejection_reason,
     detect_currencies,
+    explicit_currency_codes,
     is_remote_location,
     stack_mismatch_reason,
 )
@@ -114,12 +116,12 @@ def test_brl_salary_is_rejected():
     assert "não elegível" in job.qualification.hard_reject_reason
 
 
-def test_brazilian_job_without_explicit_usd_is_rejected():
-    """Vaga PT-BR/BR precisa provar pagamento em USD (caso BairesDev)."""
+def test_brazilian_job_without_explicit_currency_is_neutral():
+    """Ausência de salário não é moeda vedada; só moeda explícita filtra."""
     job = _job("Brasil - Manaus, AM (Remote)", "")
     _agent(_facts(currency=None, salary_present=False)).qualify(job)
-    assert job.qualification.decision == "SKIP"
-    assert "informação explícita" in job.qualification.hard_reject_reason
+    assert job.qualification.decision == "APPLY"
+    assert job.qualification.hard_reject_reason is None
 
 
 def test_brazilian_job_with_explicit_usd_is_allowed():
@@ -136,11 +138,11 @@ def test_international_job_without_salary_is_presumed_usd_eur():
     assert job.qualification.decision == "APPLY"
 
 
-def test_portuguese_posting_without_currency_is_rejected():
+def test_portuguese_posting_without_currency_is_neutral():
     job = _job("Remote", "")
     job.description = "Desenvolvedor .NET remoto, salário a combinar, currículo via LinkedIn."
     _agent(_facts(currency=None, salary_present=False)).qualify(job)
-    assert job.qualification.decision == "SKIP"
+    assert job.qualification.decision == "APPLY"
 
 
 def test_semantic_rejection_is_explained_in_restriction_details():
@@ -351,6 +353,18 @@ def test_currency_detection_does_not_confuse_brl_with_usd():
     assert detect_currencies("R$ 20.000") == {"BRL"}
     assert detect_currencies("US$ 120,000") == {"USD"}
     assert detect_currencies("€ 90,000") == {"EUR"}
+    assert detect_currencies("CHF 123'000 - CHF 153'000") == {"CHF"}
+
+
+def test_explicit_iso_codes_salvage_currency_extracted_by_llm():
+    assert explicit_currency_codes("CHF", None, "usd") == {"CHF", "USD"}
+    assert explicit_currency_codes("moeda não informada", "") == set()
+
+
+def test_unknown_currency_rejects_but_missing_salary_is_neutral():
+    allowed = {"USD", "EUR"}
+    assert "CHF" in currency_rejection_reason({"CHF"}, allowed, national=False)
+    assert currency_rejection_reason(set(), allowed, national=True) is None
 
 
 def test_remote_detection_rejects_hybrid_marker():

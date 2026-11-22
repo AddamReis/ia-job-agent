@@ -57,7 +57,22 @@ _CURRENCY_PATTERNS = {
     "EUR": re.compile(r"\bEUR\b|€|euros?", re.IGNORECASE),
     "GBP": re.compile(r"\bGBP\b|£|pounds?", re.IGNORECASE),
     "BRL": re.compile(r"\bBRL\b|R\$|reais?", re.IGNORECASE),
+    "CHF": re.compile(r"\bCHF\b|francos?|francs?", re.IGNORECASE),
+    "JPY": re.compile(r"\bJPY\b|\byen\b", re.IGNORECASE),
+    "CAD": re.compile(r"\bCAD\b|CA\$", re.IGNORECASE),
+    "AUD": re.compile(r"\bAUD\b|AUS\$", re.IGNORECASE),
 }
+_ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
+
+def explicit_currency_codes(*values: str | None) -> set[str]:
+    """Códigos ISO explícitos já extraídos pelo LLM (ex.: ``currency=CHF``)."""
+    codes = {
+        value.strip().upper()
+        for value in values
+        if value and _ISO_CURRENCY_RE.fullmatch(value.strip().upper())
+    }
+    return codes
 
 
 def is_remote_location(location: str, title: str = "") -> bool:
@@ -153,26 +168,25 @@ def is_national_or_portuguese_posting(location: str, text: str) -> bool:
 
 
 def currency_rejection_reason(
-    currencies: set[str], allowed: set[str], national: bool
+    currencies: set[str], allowed: set[str], national: bool = False
 ) -> str | None:
-    """Moeda é critério: USD/EUR; nacional/PT-BR sem prova explícita reprova.
+    """Moeda é critério somente quando há moeda explícita na vaga.
 
-    - Moeda elegível explícita: aprovada (multi-moeda inclui USD/EUR).
-    - Outra moeda explícita (BRL, GBP...): reprovada.
-    - Sem moeda explícita: internacional é presumida USD/EUR; vaga brasileira
-      ou em português precisa trazer a informação (ex.: BairesDev paga em USD).
+    - USD/EUR explícitos (ou presentes em faixa multi-moeda): aprovado.
+    - Qualquer outra moeda explícita (BRL, CHF, GBP...): reprovado.
+    - Sem salário ou sem moeda informada: neutro. Salario fica FORA do score e
+      a ausência de faixa não é evidência de moeda inelegível.
+
+    ``national`` permanece no contrato por compatibilidade, mas não reprova
+    vagas brasileiras/PT-BR apenas por omissão salarial.
     """
+    del national  # mantido apenas para compatibilidade de chamada
     if currencies & allowed:
         return None
     if currencies:
         return (
             f"salário informado em {', '.join(sorted(currencies))} — "
             f"moeda não elegível ({'/'.join(sorted(allowed))})"
-        )
-    if national:
-        return (
-            "vaga brasileira/em português sem informação explícita de "
-            f"pagamento em {'/'.join(sorted(allowed))}"
         )
     return None
 
@@ -608,6 +622,10 @@ class JobQualificationAgent:
             currencies = detect_currencies(
                 " ".join(p for p in [facts.currency or "", job.currency or ""] if p)
             )
+            # O extrator pode devolver um ISO válido que ainda não tem regex
+            # própria (ex.: CHF). Só entra como fallback: se o texto já trouxe
+            # moeda explícita (ex.: BRL), ela prevalece sobre o campo do LLM.
+            currencies |= explicit_currency_codes(facts.currency, job.currency)
         allowed_currencies = {code.upper() for code in search_cfg.currencies}
         currency_reject = currency_rejection_reason(
             currencies,

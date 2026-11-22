@@ -77,6 +77,16 @@ def test_reclassification_flip_is_learned(tmp_path) -> None:
     assert "reclassificação/positivo" in memory.context_for(after)
 
 
+def test_reclassification_accepts_status_only_before(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    after = _job(status=JobStatus.QUALIFIED)
+    repo.upsert_job(after)
+    memory = QualificationMemory(repo)
+
+    assert memory.record_reclassification(JobStatus.REJECTED_BY_FILTER, after) >= 1
+    assert "reclassificação/positivo" in memory.context_for(after)
+
+
 def test_memory_context_is_injected_into_prompt() -> None:
     mensagens = fit_messages(
         "Engineer", "Acme", "C# role", "{}", memory_context="- stack:java: negativo"
