@@ -1,7 +1,9 @@
 """Filtro de janela de recência e ordenação por publicação mais recente."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+from src.agents.qualification import stale_reason
 from src.agents.research import _is_recent, _newest_first
+from src.core.config import Settings
 from src.execution.android.accessibility import parse_posted
 from src.models.domain import JobOpportunity
 
@@ -41,3 +43,20 @@ def test_parse_posted_distinguishes_hours_from_days():
     posted, precision = parse_posted("Posted 2 days ago")
     assert precision == "day"
     assert posted is not None and posted < datetime.now() - timedelta(hours=6)
+
+
+def test_stale_reason_accepts_timezone_aware_posted_at_from_postgres() -> None:
+    settings = Settings.load()
+    recente = JobOpportunity(
+        title="Engineer",
+        posted_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        posted_precision="hour",
+    )
+    antiga = JobOpportunity(
+        title="Engineer",
+        posted_at=datetime.now(timezone.utc) - timedelta(days=3),
+        posted_precision="day",
+    )
+
+    assert stale_reason(recente, settings) is None
+    assert "janela" in (stale_reason(antiga, settings) or "")

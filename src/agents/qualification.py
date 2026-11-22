@@ -230,7 +230,14 @@ def stale_reason(job: JobOpportunity, settings: Settings) -> str | None:
     window = search_cfg.expired_after_hours or search_cfg.recency_hours
     if window <= 0 or not settings.qualification.reject.stale_posting:
         return None
-    cutoff = datetime.now() - timedelta(hours=window)
+    # Postgres devolve ``posted_at`` timezone-aware; SQLite, naive. Usar o mesmo
+    # tzinfo da vaga evita TypeError de comparação na revalidação dos workers.
+    agora = (
+        datetime.now(job.posted_at.tzinfo)
+        if job.posted_at is not None and job.posted_at.tzinfo is not None
+        else datetime.now()
+    )
+    cutoff = agora - timedelta(hours=window)
     if (
         job.posted_at is None
         or job.posted_at < cutoff
@@ -868,8 +875,10 @@ class JobQualificationAgent:
             score=result.score, decision=result.decision,
         )
         if self.bus:
+            # job_id é o contrato do worker de aplicação: o evento acorda o
+            # agente, mas a fonte da verdade continua sendo o banco.
             self.bus.emit(
-                "job.qualified", company=job.company, title=job.title,
+                "job.qualified", job_id=job.id, company=job.company, title=job.title,
                 score=result.score, decision=result.decision,
             )
         return job

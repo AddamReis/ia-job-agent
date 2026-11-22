@@ -23,6 +23,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from ..core.state import ExecutionStatus, JobStatus
@@ -173,6 +174,26 @@ class QualificationFeedbackRow(Base):
     topic: Mapped[str] = mapped_column(String, index=True)
     data: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class AgentEventRow(Base):
+    """Outbox persistente: evento entre workers, mesmo após restart ou CDP remoto.
+
+    O id é determinístico ``consumer|event_type|job_id``: publicar o mesmo aviso
+    duas vezes é idempotente, e um evento já encerrado pode ser reativado quando
+    a vaga volta a ser classificada.
+    """
+
+    __tablename__ = "agent_events"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    consumer: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, default="PENDING", index=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class CompanyRow(Base):
@@ -1191,6 +1212,110 @@ class Repository:
                 .order_by(ApprovalRow.created_at.desc())
             )
             return ApprovalRequest.model_validate(json.loads(row.data)) if row else None
+
+    # ---- outbox de eventos entre workers ----
+    @staticmethod
+    def agent_event_id(consumer: str, event_type: str, job_id: str) -> str:
+        """Chave estável: o mesmo aviso nunca é duplicado na fila."""
+        return f"{consumer}|{event_type}|{job_id}"
+
+    def publish_agent_event(
+        self,
+        consumer: str,
+        event_type: str,
+        job_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Publica um aviso persistente. Retorna False se já havia um pendente.
+
+        Um evento encerrado (``ACK``/``FAILED``) é reativado para ``PENDING``:
+        se a vaga for reclassificada, o consumidor deve ser acordado de novo.
+        """
+        event_id = self.agent_event_id(consumer, event_type, job_id)
+        now = datetime.now().isoformat()
+        data = json.dumps(payload or {}, ensure_ascii=False)
+        try:
+            with self.session() as session:
+                row = session.get(AgentEventRow, event_id)
+                if row is None:
+                    session.add(
+                        AgentEventRow(
+                            id=event_id,
+                            consumer=consumer,
+                            event_type=event_type,
+                            job_id=job_id,
+                            status="PENDING",
+                            payload=data,
+                            error="",
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    return True
+                if row.status in {"ACK", "FAILED"}:
+                    row.status = "PENDING"
+                    row.payload = data
+                    row.error = ""
+                    row.updated_at = now
+                    return True
+                return False
+        except IntegrityError:
+            # Outro publicador ganhou a corrida; o aviso já está na fila.
+            return False
+
+    def claim_agent_events(
+        self, consumer: str, limit: int = 20, *, stale_after_seconds: int = 900
+    ) -> list[dict[str, Any]]:
+        """Reserva eventos para processamento e devolve o payload já decodificado.
+
+        Eventos ``PROCESSING`` órfãos de um restart são recuperados depois de
+        ``stale_after_seconds``. No Postgres usa ``FOR UPDATE SKIP LOCKED`` para
+        que dois consumidores não peguem o mesmo aviso.
+        """
+        now = datetime.now()
+        stale = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        stmt = (
+            select(AgentEventRow)
+            .where(
+                AgentEventRow.consumer == consumer,
+                (AgentEventRow.status == "PENDING")
+                | (
+                    (AgentEventRow.status == "PROCESSING")
+                    & (AgentEventRow.updated_at < stale)
+                ),
+            )
+            .order_by(AgentEventRow.created_at, AgentEventRow.id)
+            .limit(limit)
+        )
+        if self.engine.dialect.name == "postgresql":
+            stmt = stmt.with_for_update(skip_locked=True)
+        with self.session() as session:
+            rows = session.scalars(stmt).all()
+            if not rows:
+                return []
+            for row in rows:
+                row.status = "PROCESSING"
+                row.updated_at = now.isoformat()
+            return [
+                {
+                    "id": row.id,
+                    "event_type": row.event_type,
+                    "job_id": row.job_id,
+                    "payload": json.loads(row.payload or "{}"),
+                }
+                for row in rows
+            ]
+
+    def ack_agent_event(self, event_id: str, *, status: str = "ACK", error: str = "") -> bool:
+        """Encerra um evento. ``FAILED`` guarda o motivo para auditoria."""
+        with self.session() as session:
+            row = session.get(AgentEventRow, event_id)
+            if row is None:
+                return False
+            row.status = status if status in {"ACK", "FAILED"} else "ACK"
+            row.error = error[:2000]
+            row.updated_at = datetime.now().isoformat()
+            return True
 
     # ---- memória de classificação ----
     def record_qualification_feedback(self, feedback: QualificationFeedback) -> bool:

@@ -14,7 +14,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .adapters.scheduler import LocalScheduler
+from .agents.agent_runtime import run_worker_loop
+from .agents.application_worker import ApplicationWorker
 from .agents.browser_apply import BrowserApplyAgent
+from .agents.classification_worker import ClassificationWorker
 from .agents.company_suppression import CompanySuppressionAgent
 from .agents.discovery import DiscoveryAgent
 from .agents.fast_lane import FastLaneAgent
@@ -45,6 +48,42 @@ def _orchestrator(
     bus: EventBus | None = None, settings: Settings | None = None
 ) -> Orchestrator:
     return Orchestrator(settings or _settings(), bus or EventBus())
+
+
+def _classification_worker(orchestrator: Orchestrator) -> ClassificationWorker:
+    return ClassificationWorker(
+        orchestrator.repo,
+        orchestrator.settings,
+        orchestrator.qualification,
+        orchestrator.bus,
+    )
+
+
+def _application_worker(orchestrator: Orchestrator) -> ApplicationWorker:
+    settings = orchestrator.settings
+    agent = BrowserApplyAgent(
+        orchestrator.repo,
+        settings,
+        orchestrator.profile,
+        orchestrator.resolver,
+        orchestrator.gate,
+        orchestrator.bus,
+        cdp_url=settings.browser.cdp_url,
+        memory=orchestrator.qualification_memory,
+    )
+    return ApplicationWorker(
+        orchestrator.repo, settings, agent, orchestrator.bus
+    )
+
+
+def _worker_interval() -> float:
+    """Intervalo dos loops contínuos (configurável sem tocar no YAML)."""
+    import os
+
+    try:
+        return max(1.0, float(os.getenv("AI_JOB_WORKER_INTERVAL_SECONDS", "300")))
+    except ValueError:
+        return 300.0
 
 
 def _attach_progress(bus: EventBus) -> None:
@@ -401,15 +440,80 @@ def discovery_run(
 
 @app.command("discovery-serve")
 def discovery_serve() -> None:
-    """Processo contínuo que dispara os slots configurados no timezone local."""
+    """Processo contínuo que dispara os slots configurados no timezone local.
+
+    Ao final de cada slot, o classificador consulta o banco e publica no outbox
+    as vagas aprovadas. Este serviço roda na DGX e NÃO tem o Chrome logado do
+    operador: a preparação das candidaturas é feita pela rotina separada
+    ``application-serve`` na máquina local, com o mesmo ``AI_JOB_DATABASE_URL``.
+    """
     settings = _settings()
     cfg = settings.discovery_schedule
+    orchestrator: Orchestrator | None = None
 
     def run_slot(nome: str) -> None:
+        nonlocal orchestrator
         console.print(f"[bold]Discovery[/bold] — slot {nome}")
         DiscoveryAgent(settings).run(nome)
+        try:
+            orchestrator = orchestrator or _orchestrator(settings=settings)
+            worker = _classification_worker(orchestrator)
+        except Exception as exc:
+            console.print(f"[yellow]Classificação indisponível:[/yellow] {exc}")
+            return
+        try:
+            resultado = worker.run()
+            console.print(f"[bold]Classificação[/bold] — {resultado}")
+        except Exception as exc:
+            console.print(f"[red]Classificação falhou:[/red] {exc}")
 
     LocalScheduler(cfg.timezone, cfg.slots, run_slot).run_forever()
+
+
+@app.command("classification-run")
+def classification_run(
+    limit: int = typer.Option(0, "--limit", help="Máximo de vagas nesta rodada (0 = todas)."),
+) -> None:
+    """Classifica o banco inteiro pendente (portais conhecidos primeiro)."""
+    worker = _classification_worker(_orchestrator())
+    counters = worker.run(limit or None)
+    console.print(json.dumps(counters, ensure_ascii=False))
+
+
+@app.command("classification-serve")
+def classification_serve() -> None:
+    """Loop contínuo do agente de classificação, independente do discovery."""
+    orchestrator = _orchestrator()
+    worker = _classification_worker(orchestrator)
+    run_worker_loop(
+        orchestrator.repo,
+        name="classification",
+        callback=worker.run,
+        interval_seconds=_worker_interval(),
+    )
+
+
+@app.command("application-prepare-run")
+def application_prepare_run(
+    limit: int = typer.Option(0, "--limit", help="Máximo de vagas nesta rodada (0 = todas)."),
+) -> None:
+    """Prepara candidaturas de vagas QUALIFIED e para em PENDING_APPROVAL."""
+    worker = _application_worker(_orchestrator())
+    counters = worker.run(limit or None)
+    console.print(json.dumps(counters, ensure_ascii=False))
+
+
+@app.command("application-serve")
+def application_serve() -> None:
+    """Loop contínuo do agente de aplicação; nunca envia sem APPROVED humano."""
+    orchestrator = _orchestrator()
+    worker = _application_worker(orchestrator)
+    run_worker_loop(
+        orchestrator.repo,
+        name="application",
+        callback=worker.run,
+        interval_seconds=_worker_interval(),
+    )
 
 
 @app.command()

@@ -98,6 +98,13 @@ habilidades:
   ia: ["GitHub Copilot", "Codex", "Trae IA", "n8n"]
   frontend: ["Angular", "React", "Ionic", "Capacitor"]
 
+posicionamento:
+  resumo: "Backend .NET/C# sênior, com foco em arquitetura de sistemas e integrações críticas."
+  nuvem: "AWS (Lambda, SQS, SNS, DynamoDB), GCP (Functions, Firebase) e Microsoft/Azure são experiências complementares de integração, não especialidade de expert."
+  arquitetura: "Experiência forte em arquitetura de sistemas: microservices, distributed systems, Clean Architecture, DDD, CQRS, BFF, event-driven e SSO/OAuth2."
+  lideranca: "Experiência liderando pessoas e projetos, gestão de dívida técnica, mentoria e Scrum. Não é tech lead: cargo explícito de tech lead/team lead fica fora do alvo."
+  remoto: "Apenas vagas 100% remoto."
+
 educacao:
   - "MBA em Data Science and Analytics - USP/Esalq (2021 - 2022)"
   - "Bacharelado em Ciência da Computação - Universidade do Grande ABC (2015 - 2018)"

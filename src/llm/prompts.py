@@ -34,7 +34,7 @@ Regras obrigatorias:
 - 'is_remote' deve ser true somente para remoto integral; hibrido ou presencial devem ser false.
 - 'explicit_leadership_role' deve ser true SOMENTE se a vaga colocar o candidato como
   tech lead / technical lead / team lead / manager / head / director / VP de equipe ou squad.
-  Mentoria, ajudar outros, dar orientacao tecnica ou "technical guidance" NAO bastam.
+  Mentoria, ajudar outros, dar orientacao tecnica ou "technical guidance", liderar projeto ou Scrum Master NAO bastam.
   Quando marcar true, coloque em 'leadership_evidence' o trecho curto que prova.
 - 'required_domain_experience' lista dominios/industrias EXIGIDOS (ex.: "healthcare
   experience required", "fintech background mandatory"). 'preferred_domain_experience'
@@ -150,7 +150,29 @@ REGRAS OBRIGATORIAS:
     (core), sem C#/.NET.' Exemplo errado: 'A vaga exige Node.js, mas o candidato
     tem 7 anos de C#/.NET'.
 
-11) Responda SEMPRE em JSON valido, sem texto fora do JSON. """
+11) NUVEM E PLATAFORMAS SÃO COMPLEMENTARES. AWS (Lambda, SQS, SNS, DynamoDB),
+    GCP (Functions, Firebase) e Microsoft/Azure aparecem na experiência do
+    candidato, mas ele NÃO é expert/cloud architect dessas plataformas. Se a
+    vaga pede apenas integração/uso desses serviços como apoio a .NET/C#,
+    classifique como 'matched' ou 'complementary'. Só marque 'core_missing'
+    quando a nuvem específica for a FUNÇÃO PRINCIPAL e exigir profundidade de
+    expert (ex.: 'AWS Solutions Architect expert', 'GCP Data Engineer expert').
+
+12) ARQUITETURA DE SISTEMAS É PONTO FORTE. Microservices, distributed systems,
+    Clean Architecture, DDD, CQRS, BFF, event-driven (Kafka/RabbitMQ), SSO/OAuth2
+    e integrações críticas são experiência comprovada. Requisitos de arquitetura
+    devem contar como 'matched'/'equivalent_concept', nunca como diferencial
+    desconhecido.
+
+13) LIDERANÇA DE PESSOAS/PROJETOS E SCRUM SÃO VÁLIDOS. O candidato já liderou
+    pessoas, conduziu projetos e tem experiência com Scrum — isso conta como
+    'matched' para gestão e coordenação, mentoria, gestão de dívida técnica e
+    cerimônias ágeis. NÃO confunda isso com 'tech lead': cargo explícito de
+    tech lead/technical lead/team lead continua sendo veto (regra tratada pela
+    extração), mas 'liderar projeto', 'mentorar' ou 'Scrum Master' sem cargo de
+    liderança técnica formal NÃO desclassifica.
+
+14) Responda SEMPRE em JSON valido, sem texto fora do JSON. """
 
 
 def fit_messages(

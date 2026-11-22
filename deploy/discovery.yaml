@@ -1,5 +1,7 @@
-# Serviço de população da base — roda no DGX Spark.
+# Serviço de população e classificação da base — roda no DGX Spark.
 # Quatro slots/dia configurados em config/config.yaml (10:00/12:30/15:00/18:30).
+# A candidatura roda LOCALMENTE (application-serve) com o Chrome CDP logado;
+# o handoff é o outbox agent_events no mesmo Postgres.
 services:
   discovery:
     build:

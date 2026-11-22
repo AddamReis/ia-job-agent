@@ -20,15 +20,17 @@ src/agents/    → discovery | classification | apply | fast_lane (cada um com e
 ```
 
 ```
-[DGX Spark]  discovery-agent  (4x/dia: 10:00, 12:30, 15:00, 18:30 — America/Sao_Paulo)
-                → HTML público → SQLite → DISCOVERED
+[DGX Spark]  discovery-serve  (4x/dia: 10:00, 12:30, 15:00, 18:30 — America/Sao_Paulo)
+                → HTML público → Postgres → DISCOVERED
                 → watermark por slot + âncora de tempo congelada
                          |
                          ▼
-[local, por ora]  classification-agent → DGX → memória → QUALIFIED
+[DGX Spark]  ClassificationWorker → FastLane (BairesDev/Strider) ou LLM DGX → QUALIFIED
                          |
-                         ▼
-[local]  apply-agent / fast lane (BairesDev, Strider) → CDP logado → APPROVED → Submit
+                         ▼  agent_events (outbox persistente, consumer=application)
+[máquina local]  ApplicationWorker → revalida recência/remoto/moeda → rota do portal
+                         → BrowserApplyAgent.prepare() → PENDING_APPROVAL → APPROVED humano
+                         → browser-apply --submit-only (único caminho de Submit)
 ```
 
 - `reference_time` é capturado **uma vez** no início da execução; todas as queries usam a
@@ -44,6 +46,54 @@ src/agents/    → discovery | classification | apply | fast_lane (cada um com e
 - Portais confiáveis são **flags na tabela de empresas** (`is_trusted_portal`,
   `trusted_portal_config`), sem código específico por empresa.
 - Deploys separados em `deploy/`; veja `deploy/README.md`.
+
+### Rotinas agênticas separadas (primeira versão)
+
+A classificação e a aplicação são **rotinas independentes**, com consulta ao banco como
+fonte da verdade e travas próprias em `run_locks` (`classification` e `application`):
+
+```
+[DGX] discovery-serve (slot)
+  → DiscoveryAgent.run()
+  → ClassificationWorker.run()   # DISCOVERED sem qualificação; empresas conhecidas primeiro
+      → FastLaneAgent (portal confiável) ou JobQualificationAgent (DGX)
+      → job.classified / job.qualified (com job_id)
+      → publish_agent_event("application", "job.qualified", job_id)
+
+[local, com o mesmo AI_JOB_DATABASE_URL e CDP 127.0.0.1:9222]
+  application-serve
+  → ApplicationWorker.run()      # QUALIFIED; revalida recência/remoto/moeda antes do CDP
+      → claim_agent_events("application") + ack
+      → portal known? ApplyRoute (EASY_APPLY / KNOWN_PORTAL / EXTERNAL_SIGNUP)
+      → BrowserApplyAgent.prepare() → PENDING_APPROVAL
+      → FIM. Nenhum Submit é feito por estes workers.
+```
+
+- `classification-run` / `classification-serve` e `application-prepare-run` /
+  `application-serve` permitem operar cada agente isoladamente. O intervalo dos loops
+  é `AI_JOB_WORKER_INTERVAL_SECONDS` (padrão 300s).
+- O **outbox** `agent_events` é o handoff entre processos: a DGX classifica e publica o
+  `job_id`; o worker local consome, faz `ack` e reencontra o trabalho no banco mesmo após
+  restart. Eventos `PROCESSING` órfãos são recuperados após 15 min. Publicar o mesmo
+  aviso é idempotente (chave `consumer|event_type|job_id`).
+- O barramento em memória complementa o outbox dentro do mesmo processo e apenas **acorda**
+  o worker; a fonte da verdade continua sendo o status no banco.
+- Prioridade: `is_trusted_portal` + `trusted_portal_config` > `has_account` /
+  `known_portals` > demais. Nenhum agente é criado por site; a decisão de rota pertence
+  ao agente único.
+- **Hermes** (aprendizado) corresponde ao `SitePatternStore` + `ApplyRoute`: o agente
+  reutiliza padrões de formulário já aprendidos por domínio e aprende novos após envios
+  bem-sucedidos. **Zaply** (envio simplificado) corresponde à rota `EASY_APPLY` do mesmo
+  `BrowserApplyAgent`. Não há integração externa com produtos de mesmo nome neste repositório.
+- O envio continua **exclusivo** de `browser-apply --submit-only`, que exige `APPROVED`
+  persistido pelo `ApprovalGate`. CAPTCHA/MFA/verificação nunca são resolvidos.
+
+Operação local (o Chrome já logado precisa estar com CDP em `127.0.0.1:9222`):
+
+```powershell
+$env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jobs'
+.\.venv\Scripts\python -m src.cli application-serve
+```
 
 - **Playwright + Chrome real**: fonte padrão de descoberta. Lê o `ItemList` em JSON-LD da busca
   pública (ID real da vaga, título, empresa, local) e a descrição da página `jobs/view/<id>`.
@@ -269,6 +319,27 @@ Por isso o fluxo é em duas etapas:
 - Depois de gravar o vídeo/fazer a candidatura no app, registre o check com
   `agent dependency-done <id>` (ou `--opportunity <id> --kind video_self_intro`). O comando
   aceita `--note` curto e é idempotente.
+
+## Auditoria BairesDev (todas as vagas recebidas)
+
+Foram auditadas **22 vagas** BairesDev no banco remoto:
+
+- **19 `REJECTED_BY_FILTER`** — Kotlin, Go, Django/Python, Node.js, PHP, Ruby, Java,
+  AI/Next, ASP Classic/VB, Azure IoT e similares. Títulos sem `.NET/C#` como core, fora do
+  perfil. Um caso com `10+ anos` e liderança explícita também foi corretamente recusado.
+- **3 `SUBMITTED`** — todas são a **mesma vaga** (`Senior Microsoft Teams & .NET Developer`,
+  job 298508) em localizações diferentes (Brazil, Lima, Guayas). O portal exibia
+  `Ver solicitud`: o agente **reconheceu candidatura já existente**, registrou a evidência e
+  **não clicou em Submit** — por isso não há `approval_requests` para elas. O status
+  `SUBMITTED` aqui significa “candidatura preexistente detectada”, não envio novo.
+- A vaga irmã sem descrição (Chile) foi recusada por falta de evidência; está coerente com
+  a regra de não classificar sem dados para validar remoto/moeda/idioma.
+
+O fast lane permaneceu coerente: `.NET/C#` no título protege; `lead the creation` e
+`key technical driver` **não** são liderança de pessoas; `5+ anos` cabe no perfil (7 anos).
+Nuances adicionadas ao perfil/prompt: nuvem (AWS/GCP/Microsoft) como experiência
+complementar, arquitetura de sistemas como ponto forte, liderança de pessoas/projetos e
+Scrum como experiência válida — sem transformar o candidato em tech lead.
 
 ## Segurança
 
