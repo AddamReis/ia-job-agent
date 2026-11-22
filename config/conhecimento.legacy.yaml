@@ -1,6 +1,7 @@
 # Base estruturada extraída de:
 # C:\Users\addam\Downloads\Addam dos Reis Oliveira - Software Engineer.pdf
 # (11/11/2026). Atualize este arquivo quando o currículo mudar.
+# Fica em config/ (não data/) porque o deploy sincroniza config/ e preserva data/.
 
 pessoal:
   nome: "Addam dos Reis Oliveira"

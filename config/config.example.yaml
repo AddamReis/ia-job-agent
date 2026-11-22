@@ -250,5 +250,5 @@ storage:
 profile:
   cv_path: "C:\\Users\\addam\\Downloads\\Addam dos Reis Oliveira - Software Engineer.pdf"
   legacy_profile: "config/profile.legacy.yaml"
-  legacy_knowledge: "data/conhecimento.legacy.yaml"
+  legacy_knowledge: "config/conhecimento.legacy.yaml"
   tech_domains_doc: ""

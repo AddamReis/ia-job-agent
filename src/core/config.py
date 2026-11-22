@@ -342,7 +342,7 @@ class StorageConfig(BaseModel):
 class ProfileConfig(BaseModel):
     cv_path: str = ""
     legacy_profile: str = "config/profile.legacy.yaml"
-    legacy_knowledge: str = "data/conhecimento.legacy.yaml"
+    legacy_knowledge: str = "config/conhecimento.legacy.yaml"
     # Documento local opcional de domínios em tecnologias para responder perguntas.
     tech_domains_doc: str = ""
     # Setores/domínios com experiência comprovada no CV. Usados APENAS para
