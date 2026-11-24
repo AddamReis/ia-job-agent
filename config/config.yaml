@@ -221,6 +221,8 @@ application:
       oauth_account_email: "addamreis@gmail.com"
       oauth_labels: ["Continue with Google", "Entrar com Google"]
       oauth_continue_labels: ["Continuar", "Continue", "Aceitar e continuar"]
+      # Se o Google pedir senha/verificação, usar a sessão LinkedIn do Chrome uma vez.
+      oauth_fallback_labels: ["Continue with LinkedIn", "Entrar com LinkedIn"]
       # O botão Google fica desabilitado até o checkbox de termos ser marcado.
       terms_checkbox_required: true
       terms_checkbox_labels:

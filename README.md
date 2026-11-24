@@ -251,7 +251,10 @@ site por site. Existem dois modos:
 - `auth_mode: "google"` (BairesDev, Alignerr): o agente lê a tela, aceita o checkbox de termos
   quando `terms_checkbox_required: true`, clica no botão Google configurado, escolhe a conta
   `oauth_account_email` e conclui o consentimento reaproveitando a sessão já autenticada no
-  Chrome CDP. Não existe senha desses portais e nada precisa ser cadastrado no cofre.
+  Chrome CDP. Não existe senha desses portais e nada precisa ser cadastrado no cofre. Se o Google
+  pedir senha ou verificação, o agente fecha esse desafio e tenta **uma vez** o rótulo de
+  `oauth_fallback_labels` (ex.: "Continue with LinkedIn" na Alignerr), também sem digitar nada.
+  Se o LinkedIn pedir senha/CAPTCHA/MFA, ele para e reporta.
 - `auth_mode: "password"` (outros portais): usuário/senha ficam no Windows Credential Manager.
   Cadastre uma vez:
 

@@ -251,6 +251,10 @@ class PortalAuthConfig(BaseModel):
             "Continue to Applicant Site", "Aceitar e continuar",
         ]
     )
+    # Se o provedor principal (Google) pedir senha/MFA, tentar UM alternativo
+    # já autenticado no Chrome CDP — por exemplo "Continue with LinkedIn".
+    # Nunca digita senha nem resolve verificação no fallback.
+    oauth_fallback_labels: list[str] = Field(default_factory=list)
     # Alguns portais exigem aceite explícito antes de habilitar o OAuth.
     # O agente lê o checkbox na tela e marca somente quando configurado aqui.
     terms_checkbox_required: bool = False
@@ -298,6 +302,7 @@ class ApplicationConfig(BaseModel):
                 auth_mode="google",
                 oauth_account_email="addamreis@gmail.com",
                 oauth_labels=["Continue with Google", "Entrar com Google"],
+                oauth_fallback_labels=["Continue with LinkedIn", "Entrar com LinkedIn"],
                 terms_checkbox_required=True,
                 terms_checkbox_labels=[
                     "I agree to the Terms of Service, Privacy Policy and Release Agreement",

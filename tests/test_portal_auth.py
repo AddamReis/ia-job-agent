@@ -317,6 +317,7 @@ def test_alignerr_config_requires_terms_before_google_oauth() -> None:
     assert cfg.terms_checkbox_required is True
     assert ALIGNERR_TERMS in cfg.terms_checkbox_labels
     assert "Continue with Google" in cfg.oauth_labels
+    assert "Continue with LinkedIn" in cfg.oauth_fallback_labels
 
 
 def test_alignerr_terms_are_accepted_before_google_oauth(
@@ -433,6 +434,132 @@ def test_google_spanish_password_challenge_stops_agent() -> None:
     with pytest.raises(HumanActionRequired, match="senha"):
         BrowserApplyAgent._block_google_challenge(
             TextPage(), "Ingresa tu contraseña para continuar"
+        )
+
+
+class FakeFallbackPortal:
+    """Portal Alignerr: botão Google abre desafio; LinkedIn retorna autenticado."""
+
+    def __init__(self) -> None:
+        self.url = "https://app.alignerr.com/signin?job=fd47"
+        self.google = FakeClickable()
+        self.linkedin = FakeClickable(self._autenticar)
+        self.context: FakeContext | None = None
+
+    def _autenticar(self) -> None:
+        self.url = "https://app.alignerr.com/home?job=fd47"
+
+    def get_by_text(self, rotulo, exact=False):
+        if "Google" in rotulo:
+            return FakeLocator(self.google)
+        if "LinkedIn" in rotulo:
+            return FakeLocator(self.linkedin)
+        return FakeZeroLocator()
+
+    def get_by_role(self, *_args, **_kwargs):
+        return FakeZeroLocator()
+
+    def wait_for_timeout(self, _ms) -> None:
+        return None
+
+
+class FakeLinkedInOauthPage:
+    def __init__(self, portal: FakeFallbackPortal) -> None:
+        self.url = "https://www.linkedin.com/oauth/v2/authorization?client_id=1"
+        self.portal = portal
+        self.allow = FakeClickable(self._autorizar)
+
+    def _autorizar(self) -> None:
+        self.portal._autenticar()
+        self.url = "about:blank"
+
+    def evaluate(self, _script: str) -> str:
+        return "Allow"
+
+    def get_by_text(self, rotulo, exact=False):
+        if rotulo in BrowserApplyAgent._OAUTH_FALLBACK_CONTINUE_LABELS:
+            return FakeLocator(self.allow)
+        return FakeZeroLocator()
+
+    def get_by_role(self, *_args, **_kwargs):
+        return FakeZeroLocator()
+
+    def wait_for_timeout(self, _ms) -> None:
+        return None
+
+
+def test_google_password_challenge_uses_linkedin_fallback_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eventos: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "src.agents.browser_apply.log_event",
+        lambda event, **context: eventos.append((event, context)),
+    )
+    agent = _agent(monkeypatch, domain=ALIGNERR_DOMAIN)
+    fechadas: list[object] = []
+    agent.browser = type(
+        "FakeBrowser", (), {"close_tab": lambda self, page: fechadas.append(page)}
+    )()
+
+    portal = FakeFallbackPortal()
+    google = FakeGooglePage(
+        portal, text="Selecciona una cuenta. Ingresa tu contraseña para continuar."
+    )
+    linkedin = FakeLinkedInOauthPage(portal)
+    portal.context = FakeContext([portal, google, linkedin])
+
+    def landing(page):
+        if "/home" in str(page.url or ""):
+            return {
+                "url": page.url,
+                "text": "Welcome",
+                "checkboxes": [],
+                "passwords": 0,
+                "oauth_google": False,
+                "oauth_linkedin": False,
+                "has_form": True,
+                "blocked": False,
+            }
+        return {
+            "url": page.url,
+            "text": ALIGNERR_TERMS + " Continue with Google Continue with LinkedIn",
+            "checkboxes": [
+                {"text": ALIGNERR_TERMS, "checked": True, "frame_index": 0}
+            ],
+            "passwords": 0,
+            "oauth_google": True,
+            "oauth_linkedin": True,
+            "has_form": False,
+            "blocked": False,
+        }
+
+    monkeypatch.setattr(agent, "_landing_state", landing)
+    cfg = agent.settings.application.portal_auth[ALIGNERR_DOMAIN]
+
+    resultado = agent._google_oauth_login(portal, cfg, ALIGNERR_DOMAIN)
+
+    assert resultado is portal
+    assert google in fechadas
+    assert linkedin.allow.clicked is True
+    nomes = [evento for evento, _ in eventos]
+    assert "portal_google_password_fallback" in nomes
+    assert "portal_oauth_fallback_started" in nomes
+    assert "portal_linkedin_oauth" in nomes
+
+
+def test_linkedin_challenge_stops_fallback_without_typing() -> None:
+    class LoginPage:
+        url = "https://www.linkedin.com/u/login/identifier?state=abc"
+
+    class CheckpointPage:
+        url = "https://www.linkedin.com/oauth/v2/authorization"
+
+    with pytest.raises(HumanActionRequired, match="LinkedIn"):
+        BrowserApplyAgent._block_linkedin_challenge(LoginPage(), "Sign in")
+    with pytest.raises(HumanActionRequired, match="LinkedIn"):
+        BrowserApplyAgent._block_linkedin_challenge(
+            CheckpointPage(), "Introduce tu contraseña"
         )
 
 

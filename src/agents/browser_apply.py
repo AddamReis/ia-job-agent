@@ -779,7 +779,7 @@ class BrowserApplyAgent:
         if not _is_login_page(url, texto):
             return False
         estado = self._landing_state(page)
-        if estado.get("passwords") or estado.get("oauth_google"):
+        if estado.get("passwords") or estado.get("oauth_google") or estado.get("oauth_linkedin"):
             return True
         return not (estado.get("has_form") or estado.get("description"))
 
@@ -788,7 +788,12 @@ class BrowserApplyAgent:
         if domain_of(str(page.url or "")) != dominio:
             return False
         estado = self._landing_state(page)
-        if estado.get("blocked") or estado.get("passwords") or estado.get("oauth_google"):
+        if (
+            estado.get("blocked")
+            or estado.get("passwords")
+            or estado.get("oauth_google")
+            or estado.get("oauth_linkedin")
+        ):
             return False
         if _is_login_page(str(page.url or ""), str(estado.get("text") or "")):
             return bool(estado.get("has_form") or estado.get("description"))
@@ -1160,103 +1165,244 @@ class BrowserApplyAgent:
         "type your password", "ingresa tu contraseña", "introduzca su contraseña",
         "escribe tu contraseña", "verify it's you", "verifica tu identidad",
     )
+    # LinkedIn reaproveita a sessão do Chrome; se cair em login/checkpoint,
+    # o agente para no mesmo gate humano (nunca digita senha nem resolve MFA).
+    _LINKEDIN_CHALLENGE_URL = re.compile(
+        r"linkedin\.com/(?:checkpoint|authwall|u/login|login)", re.I
+    )
+    _CAPTCHA_TEXT = (
+        "captcha", "unusual traffic", "verificação", "verificacao",
+        "verificacion", "confirm you are human", "2fa", "mfa",
+    )
+    _OAUTH_FALLBACK_CONTINUE_LABELS = (
+        "Allow", "Authorize", "Accept", "Permitir", "Autorizar",
+        "Continuar", "Continue",
+    )
+
+    @classmethod
+    def _google_challenge_detected(cls, page: Any, texto: str) -> bool:
+        url = str(page.url or "")
+        baixo = str(texto or "").lower()
+        return bool(cls._GOOGLE_CHALLENGE_URL.search(url)) or any(
+            sinal in baixo for sinal in cls._GOOGLE_CHALLENGE_TEXT
+        )
 
     @classmethod
     def _block_google_challenge(cls, page: Any, texto: str) -> None:
         """Para antes de qualquer senha, MFA ou verificação do Google."""
-        url = str(page.url or "")
-        baixo = str(texto or "").lower()
-        if cls._GOOGLE_CHALLENGE_URL.search(url) or any(
-            sinal in baixo for sinal in cls._GOOGLE_CHALLENGE_TEXT
-        ):
+        if cls._google_challenge_detected(page, texto):
             raise HumanActionRequired(
                 "login", "Google pediu senha/verificação; agente não digita credencial"
             )
 
-    def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
-        """Completa OAuth Google reaproveitando a sessão do Chrome CDP.
+    @staticmethod
+    def _is_google_challenge_error(exc: Exception) -> bool:
+        return "Google pediu senha" in str(exc)
 
-        Nunca digita senha nem resolve verificação: se o Google pedir senha,
-        CAPTCHA ou outra checagem, o agente para com ação humana.
-        """
-        contexto = page.context
-        clicou = False
-        for rotulo in cfg.oauth_labels:
+    @staticmethod
+    def _page_text(page: Any) -> str:
+        try:
+            return str(page.evaluate("() => document.body.innerText") or "")
+        except Exception:
+            return ""
+
+    @classmethod
+    def _block_linkedin_challenge(cls, page: Any, texto: str) -> None:
+        """Barreira humana no fallback: senha, verificação ou checkpoint."""
+        url = str(page.url or "")
+        baixo = str(texto or "").lower()
+        sinais = (
+            "digite sua senha", "informe sua senha", "enter your password",
+            "type your password", "ingresa tu contraseña", "escribe tu contraseña",
+            "senha", "password", "contraseña", "contrasena", "verify it's you",
+            "verifica tu identidad", "código de verificação", "verification code",
+        )
+        if cls._LINKEDIN_CHALLENGE_URL.search(url) or any(
+            sinal in baixo for sinal in sinais
+        ):
+            raise HumanActionRequired(
+                "login", "LinkedIn pediu senha/verificação; agente não digita credencial"
+            )
+
+    @classmethod
+    def _block_oauth_captcha(cls, texto: str, provedor: str) -> None:
+        baixo = str(texto or "").lower()
+        if any(sinal in baixo for sinal in cls._CAPTCHA_TEXT):
+            raise BlockedByPlatformError(
+                f"verificação/CAPTCHA no OAuth {provedor}; agente não interage"
+            )
+
+    def _click_oauth_button(
+        self, page: Any, labels: list[str], dominio: str, provedor: str
+    ) -> str:
+        """Clica no botão do provedor lido da tela, sem adivinhar seletor."""
+        for rotulo in labels or []:
             alvo = page.get_by_text(rotulo, exact=False)
             if alvo.count() == 0:
                 alvo = page.get_by_role("button", name=re.compile(re.escape(rotulo), re.I))
-            if alvo.count():
+            if alvo.count() == 0:
+                continue
+            try:
                 alvo.first.click()
-                clicou = True
-                page.wait_for_timeout(2500)
-                break
-        if not clicou:
-            raise HumanActionRequired(
-                "login", f"botão de login Google não encontrado em {dominio}"
-            )
+                return rotulo
+            except Exception:
+                continue
+        raise HumanActionRequired(
+            "login", f"botão de login {provedor} não encontrado em {dominio}"
+        )
 
-        google = None
+    @staticmethod
+    def _wait_for_oauth_popup(
+        page: Any, dominio: str, popup_domain: str, provedor: str
+    ) -> Any:
+        contexto = page.context
         for _ in range(8):
-            google = next(
-                (p for p in contexto.pages if "accounts.google.com" in p.url), None
+            popup = next(
+                (
+                    p for p in reversed(contexto.pages)
+                    if popup_domain in str(p.url or "")
+                ),
+                None,
             )
-            if google is not None:
-                break
+            if popup is not None:
+                return popup
             page.wait_for_timeout(1000)
-        if google is None:
-            raise BlockedByPlatformError(
-                f"OAuth Google de {dominio} não abriu a seleção de conta"
-            )
+        raise BlockedByPlatformError(
+            f"OAuth {provedor} de {dominio} não abriu a seleção de conta"
+        )
 
+    def _close_oauth_pages(
+        self, contexto: Any, popup_domain: str, preservar: tuple[Any, ...] = ()
+    ) -> None:
+        """Fecha só abas do provedor, nunca a aba do portal nem a janela."""
+        browser = getattr(self, "browser", None)
+        if browser is None:
+            return
+        for aba in list(contexto.pages):
+            if popup_domain not in str(aba.url or ""):
+                continue
+            if any(aba is manter for manter in preservar):
+                continue
+            try:
+                browser.close_tab(aba)
+            except Exception:
+                pass
+
+    def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
+        """OAuth Google; se pedir senha, usa o fallback configurado uma vez."""
         try:
-            texto = str(google.evaluate("() => document.body.innerText") or "")
-        except Exception:
-            texto = ""
-        baixo = texto.lower()
+            return self._oauth_with_provider(
+                page,
+                cfg,
+                dominio,
+                provedor="Google",
+                popup_domain="accounts.google.com",
+                labels=list(cfg.oauth_labels or []),
+                continue_labels=list(cfg.oauth_continue_labels or []),
+                account_email=str(cfg.oauth_account_email or ""),
+            )
+        except HumanActionRequired as exc:
+            fallbacks = list(getattr(cfg, "oauth_fallback_labels", []) or [])
+            if not self._is_google_challenge_error(exc) or not fallbacks:
+                raise
+            log_event(
+                "portal_google_password_fallback",
+                domain=dominio,
+                company=cfg.company,
+                reason=str(exc)[:160],
+            )
+            self._close_oauth_pages(page.context, "accounts.google.com", preservar=(page,))
+            return self._fallback_oauth_login(page, cfg, dominio)
+
+    def _fallback_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
+        """Tenta o provedor alternativo já logado no Chrome, sem digitar nada."""
+        labels = list(getattr(cfg, "oauth_fallback_labels", []) or [])
+        if not labels:
+            raise HumanActionRequired(
+                "login", f"fallback de login não configurado em {dominio}"
+            )
+        # A aba do portal pode ter voltado ao /signin com os termos desmarcados
+        # quando o popup do Google foi aberto. Reler e aceitar antes de clicar.
+        page = self._accept_terms_if_needed(page, self._landing_state(page), cfg)
+        continuar = list(self._OAUTH_FALLBACK_CONTINUE_LABELS) + list(
+            cfg.oauth_continue_labels or []
+        )
+        vistos: list[str] = []
+        for rotulo in continuar:
+            if rotulo not in vistos:
+                vistos.append(rotulo)
         log_event(
-            "portal_google_screen",
+            "portal_oauth_fallback_started",
+            domain=dominio,
+            company=cfg.company,
+            labels=[r[:40] for r in labels],
+        )
+        return self._oauth_with_provider(
+            page,
+            cfg,
+            dominio,
+            provedor="LinkedIn",
+            popup_domain="linkedin.com",
+            labels=labels,
+            continue_labels=vistos,
+            account_email="",
+        )
+
+    def _oauth_with_provider(
+        self,
+        page: Any,
+        cfg: Any,
+        dominio: str,
+        *,
+        provedor: str,
+        popup_domain: str,
+        labels: list[str],
+        continue_labels: list[str],
+        account_email: str,
+    ) -> Any:
+        """Fluxo OAuth compartilhado: ler a tela, clicar, consentir, confirmar."""
+        contexto = page.context
+        prefixo = "google" if provedor == "Google" else "linkedin"
+        rotulo_clicado = self._click_oauth_button(page, labels, dominio, provedor)
+        page.wait_for_timeout(2500)
+        log_event(
+            f"portal_{prefixo}_button",
+            domain=dominio,
+            company=cfg.company,
+            rotulo=rotulo_clicado[:40],
+        )
+        popup = self._wait_for_oauth_popup(page, dominio, popup_domain, provedor)
+
+        texto = self._page_text(popup)
+        log_event(
+            f"portal_{prefixo}_screen",
             domain=dominio,
             trecho=" ".join(texto[:240].split())[:240],
         )
-        self._block_google_challenge(google, texto)
-        if any(
-            sinal in baixo
-            for sinal in (
-                "captcha", "unusual traffic", "verificação", "verificacao",
-                "confirm you are human", "2fa",
-            )
-        ):
-            raise BlockedByPlatformError(
-                "verificação/CAPTCHA no OAuth Google; agente não interage"
-            )
+        if provedor == "Google":
+            self._block_google_challenge(popup, texto)
+        else:
+            self._block_linkedin_challenge(popup, texto)
+        self._block_oauth_captcha(texto, provedor)
 
-        email = cfg.oauth_account_email
-        if email and email.lower() in baixo:
-            conta = google.get_by_text(email, exact=False)
+        if account_email and account_email.lower() in texto.lower():
+            conta = popup.get_by_text(account_email, exact=False)
             if conta.count():
                 conta.first.click()
-                google.wait_for_timeout(1500)
-                try:
-                    texto = str(google.evaluate("() => document.body.innerText") or "")
-                except Exception:
-                    texto = ""
-                self._block_google_challenge(google, texto)
+                popup.wait_for_timeout(1500)
+                texto = self._page_text(popup)
+                if provedor == "Google":
+                    self._block_google_challenge(popup, texto)
+                else:
+                    self._block_linkedin_challenge(popup, texto)
+                self._block_oauth_captcha(texto, provedor)
 
-        clicou_continue = ""
-        for rotulo in cfg.oauth_continue_labels:
-            botao = google.get_by_text(rotulo, exact=False)
-            if botao.count() == 0:
-                botao = google.get_by_role("button", name=re.compile(re.escape(rotulo), re.I))
-            if botao.count():
-                try:
-                    botao.first.click()
-                    clicou_continue = rotulo
-                except Exception:
-                    continue
-                google.wait_for_timeout(4000)
-                break
+        clicou_continue = self._click_oauth_button(
+            popup, continue_labels, dominio, f"consentimento {provedor}"
+        )
+        popup.wait_for_timeout(4000)
         log_event(
-            "portal_google_continue",
+            f"portal_{prefixo}_continue",
             domain=dominio,
             rotulo=clicou_continue[:40],
             urls=[str(p.url or "")[:160] for p in contexto.pages][:8],
@@ -1265,6 +1411,14 @@ class BrowserApplyAgent:
         destino = None
         for _ in range(8):
             for candidata in contexto.pages:
+                if popup_domain in str(candidata.url or ""):
+                    texto_aba = self._page_text(candidata)
+                    if provedor == "Google":
+                        self._block_google_challenge(candidata, texto_aba)
+                    else:
+                        self._block_linkedin_challenge(candidata, texto_aba)
+                    self._block_oauth_captcha(texto_aba, provedor)
+            for candidata in contexto.pages:
                 if self._authenticated_page(candidata, dominio):
                     destino = candidata
                     break
@@ -1272,22 +1426,25 @@ class BrowserApplyAgent:
                 break
             page.wait_for_timeout(1000)
 
-        for aba in list(contexto.pages):
-            if "accounts.google.com" in str(aba.url or "") and aba is not destino:
-                try:
-                    self.browser.close_tab(aba)
-                except Exception:
-                    pass
+        self._close_oauth_pages(
+            contexto, popup_domain, preservar=tuple(p for p in (page, destino) if p is not None)
+        )
         if destino is None:
             log_event(
-                "portal_google_oauth_inconclusivo",
+                f"portal_{prefixo}_oauth_inconclusivo",
                 domain=dominio,
                 urls=[str(p.url or "")[:160] for p in contexto.pages][:8],
             )
             raise HumanActionRequired(
-                "login", f"OAuth Google de {dominio} não retornou ao portal autenticado"
+                "login",
+                f"OAuth {provedor} de {dominio} não retornou ao portal autenticado",
             )
-        log_event("portal_google_oauth", domain=dominio, company=cfg.company, account=email)
+        log_event(
+            f"portal_{prefixo}_oauth",
+            domain=dominio,
+            company=cfg.company,
+            account=account_email,
+        )
         return destino
 
     def _ensure_portal_login(self, page: Any) -> Any:
