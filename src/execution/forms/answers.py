@@ -47,6 +47,16 @@ class AnswerResolver:
 
     def resolve(self, field: FormField) -> AnswerDecision:
         value, source, needs_human, category = resolve_local(field, self.profile, self.settings)
+        # Dados pessoais sensíveis nunca são inferidos pelo LLM. O mapper já os
+        # sinaliza; esta barreira garante que nenhuma resposta do modelo os
+        # reintroduza (ex.: "Year" com ano de nascimento inventado).
+        if category == "sensitive" or source == "politica:acao_sensivel":
+            return AnswerDecision(
+                value="",
+                source="politica:acao_sensivel",
+                needs_human=True,
+                reason="ação sensível exige aprovação humana",
+            )
         if not needs_human and value:
             return AnswerDecision(
                 value=value, source=source, needs_human=False, reason="regra local com evidência"

@@ -290,6 +290,14 @@ class BrowserApplyAgent:
         for number in range(1, _MAX_FORM_STEPS + 1):
             self._ensure_not_blocked(page)
             snapshot = snapshot_form(page)
+            # SPAs (Alignerr) montam os steps depois do JavaScript. Sem isso o
+            # agente lê um formulário vazio e tenta submeter antes dos campos.
+            if not snapshot.get("fields"):
+                for _tentativa in range(10):
+                    page.wait_for_timeout(1000)
+                    snapshot = snapshot_form(page)
+                    if snapshot.get("fields"):
+                        break
             if not resume_ready:
                 # Em candidaturas paginadas o campo de CV pode aparecer só no
                 # step 2/3. Tentar em cada step evita reprovar o envio antes da
@@ -1870,8 +1878,14 @@ class BrowserApplyAgent:
                 category = decision.reason if hasattr(decision, "reason") else "general"
                 category = "sensitive" if needs_human and "sens" in str(category).lower() else category
 
+            sensivel = (
+                category == "sensitive" or source == "politica:acao_sensivel"
+            )
             if needs_human or not value:
-                if not field.required:
+                # Campo sensível sem evidência bloqueia mesmo quando o DOM não
+                # marca ``required``: gênero/data de nascimento não podem ser
+                # inventados nem ignorados para liberar o Submit.
+                if not field.required and not sensivel:
                     log_event("browser_apply_optional_field_skipped", signature=signature)
                     continue
                 raise HumanActionRequired(

@@ -22,7 +22,11 @@ _LOCAL_RULES: list[tuple[str, str, str]] = [
 ]
 
 _SENSITIVE = re.compile(
-    r"termos|privacidade|pol[ií]tica|autoriza[cç][aã]o|trabalho|visto|sponsorship|"
+    # Gênero e data de nascimento são dados pessoais sensíveis: o agente não os
+    # infere do currículo nem pede ao LLM que os invente.
+    r"gender|genero|g nero|sexo|date of birth|birth date|birthday|data de nascimento|"
+    r"nascimento|^\s*month\s*$|^\s*day\s*$|^\s*year\s*$|"
+    r"termos|privacidade|politica|autorizacao|trabalho|visto|sponsorship|"
     r"sal[aá]rio|pretens[aã]o|contrato|legal|compromisso|mfa|captcha|senha|password",
     re.IGNORECASE,
 )

@@ -57,7 +57,11 @@ _SNAPSHOT_JS = r"""
   )].filter(el => !playerControl(el));
   const fields = [];
   let index = 0;
-  for (const el of nodes) {
+  // Selects MUI expõem um [role=combobox] e um input interno para o mesmo campo.
+  // Ignorar o interno evita índice duplicado e preenchimento no controle errado.
+  const interno = (el) => el.getAttribute('aria-hidden') === 'true' &&
+    el.parentElement && el.parentElement.querySelector(':scope > [role=combobox]');
+  for (const el of nodes.filter(el => !interno(el))) {
     const type = el.tagName.toLowerCase() === 'select'
       ? 'select'
       : (el.getAttribute('type') || el.getAttribute('role') || 'text').toLowerCase();
@@ -72,6 +76,13 @@ _SNAPSHOT_JS = r"""
       label = labelEl ? labelEl.innerText.trim() : '';
     }
     label = label || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || '';
+    if (!String(label).trim()) {
+      // MUI/Select (Alignerr): o controle é um input readonly dentro do container
+      // que traz o texto do rótulo ("Select Gender", "Month", "Day", "Year").
+      // Sem isso o agente acha que o formulário não tem campos e tenta submeter.
+      const caixa = el.closest('div');
+      if (caixa) label = (caixa.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    }
     const meaningful = String(label).trim() && !generic.test(String(label));
     if (!scoped && !meaningful) continue;
     const parent = el.parentElement || el;

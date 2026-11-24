@@ -16,6 +16,7 @@ from src.core.errors import HumanActionRequired, ValidationError
 from src.core.state import JobStatus
 from src.execution.forms.answers import AnswerResolver
 from src.execution.forms.field import FormField
+from src.execution.forms.mapper import resolve_local
 from src.execution.web.form_dom import (
     ensure_resume_uploaded,
     fill_field,
@@ -485,6 +486,21 @@ def test_ensure_resume_uploaded_accepts_file_without_radio(tmp_path) -> None:
     assert ensure_resume_uploaded(Page(), cv) == "uploaded"
 
 
+def test_gender_and_birth_date_are_sensitive_without_evidence() -> None:
+    perfil = CandidateProfile()
+    for rotulo in (
+        "Gender", "Date of Birth", "Gênero", "Data de Nascimento",
+        "Month", "Day", "Year",
+    ):
+        campo = FormField(label=rotulo, required=True)
+        valor, _origem, precisa_humano, categoria = resolve_local(
+            campo, perfil, Settings()
+        )
+        assert valor == ""
+        assert precisa_humano is True
+        assert categoria == "sensitive"
+
+
 def test_resume_attached_on_page_reads_filename_from_body_text(tmp_path) -> None:
     cv = tmp_path / "cv-alignerr.pdf"
     cv.write_bytes(b"%PDF-1.4")
@@ -774,6 +790,40 @@ def test_optional_field_without_evidence_is_skipped(tmp_path) -> None:
         ],
     }
     assert agent._decide(snapshot) == []
+
+
+def test_optional_sensitive_field_without_evidence_blocks(tmp_path) -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = SitePatternStore(tmp_path / "patterns.json")
+
+    class SensitiveResolver:
+        def resolve(self, field):
+            return AnswerDecision(
+                needs_human=True,
+                source="politica:acao_sensivel",
+                reason="ação sensível exige aprovação humana",
+            )
+
+    agent.resolver = SensitiveResolver()
+    snapshot = {
+        "url": "https://app.alignerr.com/application/profile",
+        "fields": [
+            {
+                "index": 0,
+                "label": "Month",
+                "type": "combobox",
+                "required": False,
+                "options": [],
+                "autocomplete": "",
+                "identifier": "",
+                "placeholder": "",
+                "nearby_text": "",
+                "selector": "[role=combobox]",
+            }
+        ],
+    }
+    with pytest.raises(HumanActionRequired, match="Month"):
+        agent._decide(snapshot)
 
 
 def test_submission_state_recognizes_recruitcrm_confirmation() -> None:
