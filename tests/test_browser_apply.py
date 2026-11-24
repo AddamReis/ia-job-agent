@@ -16,7 +16,7 @@ from src.core.errors import HumanActionRequired, ValidationError
 from src.core.state import JobStatus
 from src.execution.forms.answers import AnswerResolver
 from src.execution.forms.field import FormField
-from src.execution.web.form_dom import ensure_resume_uploaded, fill_field
+from src.execution.web.form_dom import ensure_resume_uploaded, fill_field, submission_state
 from src.execution.web.site_patterns import SitePatternStore
 from src.models.domain import ApprovalRequest, CandidateProfile, JobAnalysis, JobOpportunity
 from src.models.schemas import AnswerDecision, UiActionDecision
@@ -627,6 +627,14 @@ def test_optional_field_without_evidence_is_skipped(tmp_path) -> None:
     assert agent._decide(snapshot) == []
 
 
+def test_submission_state_recognizes_recruitcrm_confirmation() -> None:
+    class Page:
+        def locator(self, _selector):
+            return type("Body", (), {"inner_text": lambda self: "Thank you for applying!"})()
+
+    assert submission_state(Page()) == "submitted"
+
+
 def test_recheck_remote_blocks_non_remote_analysis() -> None:
     agent = object.__new__(BrowserApplyAgent)
     agent.settings = Settings()
@@ -649,6 +657,155 @@ def test_recheck_remote_blocks_partial_remote_in_description() -> None:
 
     with pytest.raises(ValidationError, match="remoto não confirmado"):
         agent._recheck_remote(job, {"text": "80% Remote"})
+
+
+def test_landing_state_reads_checkbox_and_iframe_buttons() -> None:
+    class Frame:
+        url = "https://careers.example.com/iframe"
+
+        def evaluate(self, expression, *args):
+            if "has_form" in expression:
+                return {
+                    "url": self.url,
+                    "text": "Candidate-se a esta vaga",
+                    "buttons": [{"text": "Candidate-se a esta vaga", "href": "/apply"}],
+                    "checkboxes": [],
+                    "has_form": False,
+                    "has_file": False,
+                    "blocked": False,
+                    "passwords": 0,
+                }
+            return {}
+
+    class Page:
+        url = "https://careers.example.com/job/1"
+
+        def __init__(self) -> None:
+            self.frame = Frame()
+            self.frames = [self, self.frame]
+
+        def evaluate(self, expression, *args):
+            if "has_form" in expression:
+                return {
+                    "url": self.url,
+                    "text": "I agree to the Terms of Service and Privacy Policy",
+                    "buttons": [{"text": "Continue with Google", "href": ""}],
+                    "checkboxes": [
+                        {
+                            "text": "I agree to the Terms of Service and Privacy Policy",
+                            "checked": False,
+                        }
+                    ],
+                    "has_form": False,
+                    "has_file": False,
+                    "blocked": False,
+                    "passwords": 0,
+                }
+            return {}
+
+    estado = object.__new__(BrowserApplyAgent)._landing_state(Page())
+
+    assert estado["terms_checkbox"] is True
+    assert estado["oauth_google"] is True
+    assert estado["checkboxes"][0]["frame_index"] == 0
+    assert estado["buttons"][-1]["frame_index"] == 1
+    assert estado["buttons"][-1]["href"] == "https://careers.example.com/apply"
+
+
+def test_advance_external_landing_follows_same_cta_on_second_screen() -> None:
+    class Clicavel:
+        def __init__(self, page) -> None:
+            self.page = page
+
+        def count(self) -> int:
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self) -> bool:
+            return True
+
+        def click(self) -> None:
+            self.page.etapa += 1
+
+    class Page:
+        def __init__(self) -> None:
+            self.etapa = 0
+            self.context = self
+            self.pages = [self]
+
+        @property
+        def url(self) -> str:
+            return [
+                "https://recruitcrm.io/apply/1",
+                "https://recruitcrm.io/apply/1?step=2",
+                "https://recruitcrm.io/apply/1?step=3",
+            ][min(self.etapa, 2)]
+
+        def evaluate(self, expression, *args):
+            if "has_form" in expression:
+                return {
+                    "url": self.url,
+                    "text": "Apply To This Job",
+                    "buttons": [{"text": "Apply To This Job", "href": ""}],
+                    "checkboxes": [],
+                    "has_form": self.etapa >= 2,
+                    "has_file": self.etapa >= 2,
+                    "blocked": False,
+                }
+            return {}
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Clicavel(self)
+
+        def get_by_text(self, *_args, **_kwargs):
+            return Clicavel(self)
+
+        def locator(self, *_args):
+            return Clicavel(self)
+
+        def wait_for_timeout(self, _ms) -> None:
+            return None
+
+    agent = object.__new__(BrowserApplyAgent)
+    agent._pending_ui_actions = []
+    agent._decide_ui_action = lambda *_args: SimpleNamespace(
+        action="Apply To This Job",
+        needs_human=False,
+        source="learned",
+        reason="CTA abre a próxima etapa",
+    )
+
+    page = Page()
+    result = agent._advance_external_landing(page)
+
+    assert result is page
+    assert page.etapa == 2
+    assert len(agent._pending_ui_actions) == 1
+    assert agent._pending_ui_actions[0]["source"] == "learned"
+
+
+def test_recheck_remote_blocks_hybrid_card_label() -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    description = "Trabaja 100 % remoto en un proyecto internacional."
+    job = JobOpportunity(
+        external_id="123456789",
+        title="Ingeniero de software",
+        location="Colombia - Bogota, D.C.",
+        description=description,
+    )
+
+    with pytest.raises(ValidationError, match="h[íi]brido"):
+        agent._recheck_remote(
+            job,
+            {
+                "job_text": description,
+                "title": "Ingeniero de software at Cegeka",
+                "text": "Híbrido\n" + description,
+            },
+        )
 
 
 def test_recheck_remote_uses_description_not_sidebar_text() -> None:

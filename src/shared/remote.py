@@ -22,6 +22,13 @@ _TECH_HYBRID_RE = re.compile(
     r"\bhybrid\s+(?:cloud|app|mobile|application|framework|integration|database)\b",
     re.I,
 )
+# Rótulo explícito do card da vaga ("Híbrido", "Presencial"). Não inclui
+# "the office"/"blend of both" para não vetar por cards laterais de outras
+# vagas; esses termos continuam bloqueados quando vêm da descrição.
+_ONSITE_LABEL_RE = re.compile(
+    r"\b(?:hybrid|h[íi]brido|on-?site|onsite|presencial)\b",
+    re.I,
+)
 _REMOTE_PERCENT_RE = re.compile(
     r"(\d{1,3})\s*%\s*(?:remote|remoto)|(?:remote|remoto)\s*(\d{1,3})\s*%",
     re.I,
@@ -36,6 +43,17 @@ def has_partial_remote(*texts: str) -> bool:
         if percent < 100:
             return True
     return False
+
+
+def has_explicit_onsite_label(*texts: str) -> bool:
+    """Detecta o rótulo de modelo de trabalho no cabeçalho da vaga.
+
+    ``hybrid cloud`` é tecnologia e é limpo antes da checagem, mas
+    ``Híbrido``/``Presencial`` no card da vaga é veto determinístico mesmo
+    quando a descrição diz "100% remoto".
+    """
+    text = _TECH_HYBRID_RE.sub(" ", " ".join(value or "" for value in texts))
+    return bool(_ONSITE_LABEL_RE.search(text))
 
 
 def is_remote_text(*texts: str) -> bool:

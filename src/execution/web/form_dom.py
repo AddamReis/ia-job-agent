@@ -47,9 +47,14 @@ _SNAPSHOT_JS = r"""
   )];
   const inScope = (el) => scopes.some(s => s.contains(el));
   const generic = /selecionar idioma|select language|alerta para vagas|job alert|buscar|search/i;
+  // Controles de player (video.js etc.) também usam checkbox/radio; não são
+  // campos da candidatura e poluem a assinatura do formulário.
+  const playerControl = (el) => Boolean(el.closest(
+    '.video-js,.vjs-control-bar,[class*="vjs-"],[data-testid*="video"]'
+  ));
   const nodes = [...document.querySelectorAll(
     'input, textarea, select, [role="textbox"], [role="combobox"], [role="checkbox"], [role="radio"]'
-  )];
+  )].filter(el => !playerControl(el));
   const fields = [];
   let index = 0;
   for (const el of nodes) {
@@ -107,8 +112,11 @@ _SUBMIT_LABELS = (
     "Review application", "Revisar candidatura",
 )
 _CONFIRM_MARKS = (
-    "application submitted", "candidatura enviada", "inscrição enviada",
-    "inscricao enviada", "seu pedido foi enviado", "your application was submitted",
+    "application submitted", "application sent", "candidatura enviada",
+    "candidatura enviada com sucesso", "inscrição enviada",
+    "inscricao enviada", "seu pedido foi enviado",
+    "your application was submitted", "thank you for applying",
+    "we have received your application", "your application has been received",
 )
 _BLOCK_MARKS = ("captcha", "verificação", "verificacao", "unusual activity", "atividade incomum")
 

@@ -76,6 +76,8 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   → ApplicationWorker.run()      # QUALIFIED; revalida recência/remoto/moeda antes do CDP
       → claim_agent_events("application") + ack
       → portal known? ApplyRoute (EASY_APPLY / KNOWN_PORTAL / EXTERNAL_SIGNUP)
+      → BrowserApplyAgent lê a tela (main + iframes) ANTES de clicar:
+        login/OAuth, termos, descrição, formulário, CAPTCHA/senha
       → BrowserApplyAgent.prepare() → PENDING_APPROVAL
       → FIM. Nenhum Submit é feito por este worker.
   apply-submit-serve
@@ -246,10 +248,10 @@ etapa seguinte; o registro de candidatura só acontece quando o portal confirma 
 Para portais em `application.portal_auth`, o próprio agente faz login — você não precisa abrir
 site por site. Existem dois modos:
 
-- `auth_mode: "google"` (BairesDev): o agente clica em "Ingresa con Google", escolhe a conta
-  configurada em `oauth_account_email` e conclui o consentimento reaproveitando a sessão Google
-  já autenticada no Chrome CDP. **Não existe senha da BairesDev** e não é preciso cadastrar nada
-  no cofre.
+- `auth_mode: "google"` (BairesDev, Alignerr): o agente lê a tela, aceita o checkbox de termos
+  quando `terms_checkbox_required: true`, clica no botão Google configurado, escolhe a conta
+  `oauth_account_email` e conclui o consentimento reaproveitando a sessão já autenticada no
+  Chrome CDP. Não existe senha desses portais e nada precisa ser cadastrado no cofre.
 - `auth_mode: "password"` (outros portais): usuário/senha ficam no Windows Credential Manager.
   Cadastre uma vez:
 
@@ -259,7 +261,10 @@ python -m src.cli portal-auth --set --domain portal.exemplo.com --username SEU_U
 
 A senha é pedida com eco desligado e nunca vai para config, banco ou log. Se o portal ou o Google
 pedirem CAPTCHA/MFA/verificação/senha, o agente para sem interagir. O `APPROVED` humano antes de
-cada Submit continua obrigatório. O diálogo pós-envio com testes internos da plataforma é tratado
+cada Submit continua obrigatório. Landing externa sem formulário é percorrida no máximo quatro
+CTAs, sempre relendo a tela; a mesma etiqueta em telas diferentes (ex.: RecruitCRM) é permitida,
+mas atalhos sociais, banners de cookie e navegação são vetados. O diálogo pós-envio com testes
+internos da plataforma é tratado
 como informação: em portal com `assessment_status: completed` (ex.: BairesDev) ele não é confundido
 com dados da candidatura nem reexecutado.
 

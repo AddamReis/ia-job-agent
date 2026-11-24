@@ -57,6 +57,12 @@ class FakeLocator:
     def count(self) -> int:
         return self.count_value
 
+    def nth(self, _index: int) -> FakeLocator:
+        return self
+
+    def click(self) -> None:
+        self.first.click()
+
 
 class FakeZeroLocator:
     def count(self) -> int:
@@ -293,6 +299,123 @@ def test_already_applied_marker_is_detected_on_portal() -> None:
     assert agent._detect_already_applied(
         sem_sinal, {"url": snapshot["url"], "text": "Descripción"}
     ) is False
+
+
+ALIGNERR_DOMAIN = "app.alignerr.com"
+ALIGNERR_TERMS = (
+    "I agree to the Terms of Service, Privacy Policy and Release Agreement"
+)
+
+
+def test_alignerr_config_requires_terms_before_google_oauth() -> None:
+    cfg = Settings().application.portal_auth[ALIGNERR_DOMAIN]
+
+    assert cfg.company == "Alignerr"
+    assert cfg.auth_mode == "google"
+    assert cfg.oauth_account_email == "addamreis@gmail.com"
+    assert cfg.terms_checkbox_required is True
+    assert ALIGNERR_TERMS in cfg.terms_checkbox_labels
+    assert "Continue with Google" in cfg.oauth_labels
+
+
+def test_alignerr_terms_are_accepted_before_google_oauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eventos: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "src.agents.browser_apply.log_event",
+        lambda event, **context: eventos.append((event, context)),
+    )
+    agent = _agent(monkeypatch, domain=ALIGNERR_DOMAIN)
+    chamadas: list[tuple[str, str, bool]] = []
+
+    def falso_oauth(page, cfg, dominio):
+        chamadas.append((dominio, cfg.company, page.terms_checked))
+        page.url = "https://app.alignerr.com/home?job=fd47"
+        page.autenticado = True
+        return page
+
+    monkeypatch.setattr(
+        BrowserApplyAgent,
+        "_google_oauth_login",
+        lambda self, page, cfg, dominio: falso_oauth(page, cfg, dominio),
+    )
+
+    class Page:
+        def __init__(self) -> None:
+            self.url = "https://app.alignerr.com/signin?job=fd47"
+            self.context = FakeContext([self])
+            self.terms_checked = False
+            self.autenticado = False
+            self.term_checkbox = FakeClickable(self._aceitar)
+            self.oauth_button = FakeClickable()
+
+        def _aceitar(self) -> None:
+            self.terms_checked = True
+
+        def evaluate(self, script, *_args):
+            if "has_form" in script:
+                return {
+                    "url": self.url,
+                    "text": ALIGNERR_TERMS if not self.terms_checked else "Welcome",
+                    "buttons": [{"text": "Continue with Google", "href": ""}],
+                    "checkboxes": [
+                        {"text": ALIGNERR_TERMS, "checked": self.terms_checked}
+                    ],
+                    "has_form": self.autenticado,
+                    "has_file": False,
+                    "blocked": False,
+                    "passwords": 0,
+                }
+            return {}
+
+        def get_by_text(self, rotulo, exact=False):
+            if "terms" in rotulo.lower():
+                return FakeLocator(self.term_checkbox)
+            if "Google" in rotulo:
+                return FakeLocator(self.oauth_button)
+            return FakeZeroLocator()
+
+        def get_by_role(self, *_args, **_kwargs):
+            return FakeZeroLocator()
+
+        def wait_for_timeout(self, _ms) -> None:
+            return None
+
+    page = Page()
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda p: {
+            "url": p.url,
+            "text": ALIGNERR_TERMS if not p.terms_checked else "Welcome",
+        },
+    )
+
+    resultado, _ = agent._ensure_external_entry(page)
+
+    assert resultado is page
+    assert page.terms_checked is True
+    assert chamadas == [(ALIGNERR_DOMAIN, "Alignerr", True)]
+    assert any(event == "portal_terms_accepted" for event, _ in eventos)
+
+
+def test_google_oauth_stops_when_password_is_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(monkeypatch, domain=PORTAL_DOMAIN)
+    agent.browser = type("FakeBrowser", (), {"close_tab": lambda self, _p: None})()
+    login = FakeLoginPage(PORTAL_DOMAIN)
+    login.oauth = FakeClickable()
+    login.get_by_text = lambda rotulo, exact=False: FakeLocator(login.oauth)
+    google = FakeGooglePage(
+        login,
+        text="Escolha uma conta addamreis@gmail.com. Digite sua senha para continuar.",
+    )
+    login.context = FakeContext([login, google])
+    cfg = agent.settings.application.portal_auth[PORTAL_DOMAIN]
+
+    with pytest.raises(HumanActionRequired, match="senha"):
+        agent._google_oauth_login(login, cfg, PORTAL_DOMAIN)
 
 
 def test_existing_application_is_recorded_without_approval(monkeypatch: pytest.MonkeyPatch) -> None:

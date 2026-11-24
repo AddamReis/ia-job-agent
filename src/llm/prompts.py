@@ -280,8 +280,9 @@ Regras obrigatorias:
   experiencia extra do perfil, um dialogo pode pedir confirmacao; nesse caso o
   botao de confirmar a exclusao e seguro, desde que nao seja um botao sensivel.
 - Para "open_external_apply", escolha o CTA que abre o FORMULARIO REAL da
-  candidatura (ex.: "Aplicar a la posicao", "Apply for this position"). Nunca
-  escolha atalhos de perfil social ou login (LinkedIn, Indeed, Google, Facebook).
+  candidatura (ex.: "Aplicar a la posicao", "Apply", "Apply for this position").
+  Nunca escolha banners de cookie/privacidade, navegacao, atalhos de perfil
+  social ou login (LinkedIn, Indeed, Google, Facebook).
 - Se houver memoria de uma decisao anterior bem-sucedida, use-a como contexto,
   mas confirme que o rotulo ainda existe entre os botoes visiveis.
 - Em duvida, marque needs_human=true e nao clique em nada.

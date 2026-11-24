@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +49,7 @@ from ..models.domain import (
     CandidateProfile,
     JobOpportunity,
 )
+from ..shared.remote import has_explicit_onsite_label
 from ..storage.database import Repository
 from ..storage.evidence_store import cleanup_expired
 from .approval import ApprovalGate
@@ -94,6 +95,14 @@ _LANDING_STATE_JS = r"""
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
+  const labelText = (el) => {
+    let node = el;
+    for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+      const text = (node.innerText || '').trim();
+      if (text && text.length <= 300) return text;
+    }
+    return (el.getAttribute('aria-label') || '').trim();
+  };
   const nodes = [...document.querySelectorAll('a,button,[role="button"],label')]
     .filter(visible);
   const buttons = nodes.map(el => ({
@@ -101,15 +110,25 @@ _LANDING_STATE_JS = r"""
     aria: (el.getAttribute('aria-label') || '').trim().slice(0, 120),
     href: el.getAttribute('href') || '',
   })).filter(b => b.text).slice(0, 40);
+  const checkboxes = [...document.querySelectorAll(
+    'input[type=checkbox],[role=checkbox]'
+  )].filter(visible).map(el => ({
+    text: labelText(el).slice(0, 300),
+    aria: (el.getAttribute('aria-label') || '').trim().slice(0, 120),
+    checked: Boolean(el.checked || el.getAttribute('aria-checked') === 'true'),
+  })).filter(c => c.text || c.aria).slice(0, 20);
   const body = (document.body.innerText || '');
   return {
     url: location.href,
     text: body.slice(0, 1600),
     buttons,
+    checkboxes,
     has_form: [...document.querySelectorAll('input:not([type=hidden]),textarea,select')]
       .filter(visible).length > 0,
     has_file: [...document.querySelectorAll('input[type=file]')]
       .filter(visible).length > 0,
+    passwords: [...document.querySelectorAll('input[type=password]')]
+      .filter(visible).length,
     blocked: /captcha|verifica[cç][aã]o|unusual activity|atividade incomum/i
       .test(body.slice(0, 3000)),
   };
@@ -463,6 +482,7 @@ class BrowserApplyAgent:
                 observation.already_applied = True
                 self._log_already_applied(job, snapshot)
                 return page, snapshot, observation
+            page, snapshot = self._ensure_external_entry(page, snapshot=snapshot)
             page = self._advance_external_landing(page)
             snapshot = snapshot_form(page)
             if self._detect_already_applied(page, snapshot):
@@ -543,16 +563,17 @@ class BrowserApplyAgent:
             elif has_external_text:
                 observation = ApplyObservation(False, "texto_apply_externo")
         try:
-            if clicked and rota is ApplyRoute.KNOWN_PORTAL:
-                page = self._ensure_portal_login(page)
-                page = self._advance_external_portal(page)
             if clicked:
                 snapshot = snapshot_form(page)
-                self._ensure_no_login(page, snapshot)
-                if domain_of(page.url) != "linkedin.com":
+                page, snapshot = self._ensure_external_entry(
+                    page, known_portal=rota is ApplyRoute.KNOWN_PORTAL, snapshot=snapshot
+                )
+                if rota is ApplyRoute.KNOWN_PORTAL:
+                    page = self._advance_external_portal(page)
+                    snapshot = snapshot_form(page)
+                elif domain_of(page.url) != "linkedin.com":
                     page = self._advance_external_landing(page)
                     snapshot = snapshot_form(page)
-                    self._ensure_no_login(page, snapshot)
                 if self._detect_already_applied(page, snapshot):
                     observation.already_applied = True
                     self._log_already_applied(job, snapshot)
@@ -619,19 +640,185 @@ class BrowserApplyAgent:
     def _normalize_landing_signature(labels: list[str]) -> str:
         return re.sub(r"\W+", " ", " ".join(labels).lower()).strip()[:300]
 
+    def _landing_state(self, page: Any) -> dict[str, Any]:
+        """Lê o que está renderizado (main + iframes) ANTES de qualquer clique."""
+        principal = page.evaluate(_LANDING_STATE_JS) or {}
+        if not isinstance(principal, dict):
+            principal = {"text": str(principal)}
+        url = str(principal.get("url") or page.url or "")
+        textos = [str(principal.get("text") or "")]
+        botoes: list[dict[str, Any]] = []
+        checkboxes: list[dict[str, Any]] = []
+        for item in principal.get("checkboxes") or []:
+            checkboxes.append({**item, "frame_index": 0, "frame_url": url})
+        for item in principal.get("buttons") or []:
+            href = str(item.get("href") or "")
+            botoes.append(
+                {
+                    **item,
+                    "href": urljoin(url, href) if href else "",
+                    "frame_index": 0,
+                    "frame_url": url,
+                }
+            )
+        has_form = bool(principal.get("has_form"))
+        has_file = bool(principal.get("has_file"))
+        blocked = bool(principal.get("blocked"))
+        passwords = int(principal.get("passwords") or 0)
+
+        for indice, frame in enumerate(list(getattr(page, "frames", []))[1:], start=1):
+            try:
+                dados = frame.evaluate(_LANDING_STATE_JS) or {}
+                if not isinstance(dados, dict):
+                    dados = {"text": str(dados)}
+            except Exception:
+                continue
+            url_frame = str(frame.url or "")
+            textos.append(str(dados.get("text") or ""))
+            for item in dados.get("checkboxes") or []:
+                checkboxes.append(
+                    {**item, "frame_index": indice, "frame_url": url_frame}
+                )
+            has_form = has_form or bool(dados.get("has_form"))
+            has_file = has_file or bool(dados.get("has_file"))
+            blocked = blocked or bool(dados.get("blocked"))
+            passwords += int(dados.get("passwords") or 0)
+            for item in dados.get("buttons") or []:
+                href = str(item.get("href") or "")
+                botoes.append(
+                    {
+                        **item,
+                        "href": urljoin(url_frame, href) if href else "",
+                        "frame_index": indice,
+                        "frame_url": url_frame,
+                    }
+                )
+
+        texto = "\n".join(textos)
+        rotulos = [str(item.get("text") or "") for item in botoes]
+        return {
+            "url": url,
+            "text": texto,
+            "buttons": botoes,
+            "checkboxes": checkboxes,
+            "has_form": has_form,
+            "has_file": has_file,
+            "blocked": blocked
+            or bool(
+                re.search(
+                    r"captcha|verifica[cç][aã]o|unusual activity|atividade incomum",
+                    texto,
+                    re.I,
+                )
+            ),
+            "passwords": passwords,
+            "login": _is_login_page(url, texto) or passwords > 0,
+            "terms_checkbox": bool(
+                re.search(
+                    r"terms of service|termos de servi[çc]o|privacy policy|"
+                    r"pol[ií]tica de privacidade|release agreement",
+                    texto,
+                    re.I,
+                )
+            ),
+            "oauth_google": any(
+                re.search(
+                    r"continue with google|sign in with google|entrar com (o )?google|"
+                    r"ingresa con google",
+                    rotulo,
+                    re.I,
+                )
+                for rotulo in rotulos
+            ),
+            "oauth_linkedin": any(
+                re.search(
+                    r"continue with linkedin|sign in with linkedin|entrar com linkedin|"
+                    r"ingresa con linkedin",
+                    rotulo,
+                    re.I,
+                )
+                for rotulo in rotulos
+            ),
+            "description": bool(
+                re.search(
+                    r"descri[cç][aã]o|description|responsabilidades|responsibilities|"
+                    r"what you|o que voc[êe]",
+                    texto,
+                    re.I,
+                )
+            ),
+        }
+
+    def _observe_screen(self, page: Any) -> dict[str, Any]:
+        estado = self._landing_state(page)
+        log_event(
+            "screen_observed",
+            url=str(estado.get("url", ""))[:160],
+            login=bool(estado.get("login")),
+            terms_checkbox=bool(estado.get("terms_checkbox")),
+            terms_unchecked=sum(
+                1 for item in estado.get("checkboxes", []) if not item.get("checked")
+            ),
+            oauth_google=bool(estado.get("oauth_google")),
+            oauth_linkedin=bool(estado.get("oauth_linkedin")),
+            description=bool(estado.get("description")),
+            has_form=bool(estado.get("has_form")),
+            blocked=bool(estado.get("blocked")),
+        )
+        return estado
+
+    def _portal_needs_login(self, page: Any, snapshot: dict[str, Any]) -> bool:
+        """Distingue login real de URL legada já autenticada.
+
+        Alguns portais (ex.: Alignerr) mantêm ``/signin`` na URL após o OAuth.
+        O que decide é o que está renderizado: senha, OAuth ou termos ainda
+        pendentes significam login; formulário/descrição sem esses sinais não.
+        """
+        url = str(snapshot.get("url", "") or page.url or "")
+        texto = str(snapshot.get("text", "") or "")
+        if not _is_login_page(url, texto):
+            return False
+        estado = self._landing_state(page)
+        if estado.get("passwords") or estado.get("oauth_google"):
+            return True
+        return not (estado.get("has_form") or estado.get("description"))
+
+    def _authenticated_page(self, page: Any, dominio: str) -> bool:
+        """Verifica se a aba voltou ao portal em estado utilizável."""
+        if domain_of(str(page.url or "")) != dominio:
+            return False
+        estado = self._landing_state(page)
+        if estado.get("blocked") or estado.get("passwords") or estado.get("oauth_google"):
+            return False
+        if _is_login_page(str(page.url or ""), str(estado.get("text") or "")):
+            return bool(estado.get("has_form") or estado.get("description"))
+        return True
+
     @staticmethod
-    def _click_landing_cta(page: Any, label: str) -> bool:
+    def _frame_at(page: Any, indice: int) -> Any:
+        """Obtém o frame observado; snapshot e clique usam o mesmo índice."""
+        if not indice:
+            return page
+        frames = getattr(page, "frames", None) or []
+        try:
+            return frames[indice] or page
+        except Exception:
+            return page
+
+    @staticmethod
+    def _click_by_label(frame: Any, label: str) -> bool:
         padrao = re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
         fabricas = (
-            lambda: page.get_by_role("link", name=padrao),
-            lambda: page.get_by_role("button", name=padrao),
-            lambda: page.get_by_text(label, exact=True),
-            lambda: page.locator(f'a:has-text("{label}")'),
+            lambda: frame.get_by_role("link", name=padrao),
+            lambda: frame.get_by_role("button", name=padrao),
+            lambda: frame.get_by_text(label, exact=True),
+            lambda: frame.get_by_text(label, exact=False),
+            lambda: frame.locator(f'a:has-text("{label}")'),
         )
         for fabrica in fabricas:
             try:
                 locator = fabrica()
-                for indice in range(locator.count()):
+                for indice in range(min(int(locator.count() or 0), 8)):
                     alvo = locator.nth(indice)
                     if hasattr(alvo, "is_visible") and not alvo.is_visible():
                         continue
@@ -641,88 +828,319 @@ class BrowserApplyAgent:
                 continue
         return False
 
+    _JS_CLICK_LABEL = r"""
+    (label) => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const alvo = norm(label);
+      const visivel = el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const el = [...document.querySelectorAll('a,button,[role="button"],label')]
+        .filter(visivel)
+        .find(item => norm(item.innerText || item.getAttribute('aria-label')) === alvo);
+      if (!el) return false;
+      el.click();
+      return true;
+    }
+    """
+
+    @staticmethod
+    def _unwrap_href(href: str) -> str:
+        if "/safety/go" in href or "url=" in href:
+            alvo = parse_qs(urlparse(href).query).get("url", [""])[0]
+            return unquote(alvo) or href
+        return href
+
+    @staticmethod
+    def _click_landing_cta(
+        page: Any, label: str, botoes: list[dict[str, Any]] | None = None
+    ) -> bool:
+        """Clica o CTA lido na tela, inclusive dentro de iframe."""
+        alvos = [
+            item
+            for item in (botoes or [])
+            if BrowserApplyAgent._normalize_landing_signature(
+                [str(item.get("text") or "")]
+            )
+            == BrowserApplyAgent._normalize_landing_signature([label])
+        ] or [{"frame_index": 0, "text": label, "href": ""}]
+        for item in alvos:
+            frame = BrowserApplyAgent._frame_at(page, int(item.get("frame_index") or 0))
+            if BrowserApplyAgent._click_by_label(frame, label):
+                return True
+            try:
+                if frame.evaluate(BrowserApplyAgent._JS_CLICK_LABEL, label):
+                    return True
+            except Exception:
+                pass
+            href = BrowserApplyAgent._unwrap_href(str(item.get("href") or ""))
+            if href.startswith(("http://", "https://")) and hasattr(page, "goto"):
+                try:
+                    page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    _TERMS_RE = re.compile(
+        r"agree|aceite|concordo|accept|terms|termos|privacy|privacidade|release agreement",
+        re.I,
+    )
+    _JS_CHECK_TERMS = r"""
+    (label) => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const alvo = norm(label);
+      for (const el of document.querySelectorAll(
+        'input[type=checkbox],[role=checkbox]'
+      )) {
+        let texto = '';
+        let node = el;
+        for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+          texto = (node.innerText || '').trim();
+          if (texto && texto.length <= 300) break;
+        }
+        if (!norm(texto).includes(alvo) &&
+            !norm(el.getAttribute('aria-label')).includes(alvo)) continue;
+        if (el.checked || el.getAttribute('aria-checked') === 'true') return true;
+        const alvoCliquel = el.closest('label') || el.parentElement || el;
+        alvoCliquel.click();
+        return true;
+      }
+      return false;
+    }
+    """
+
+    @classmethod
+    def _is_terms_checkbox(cls, item: dict[str, Any], cfg: Any) -> bool:
+        textos = [str(item.get("text") or ""), str(item.get("aria") or "")]
+        textos.extend(str(v) for v in getattr(cfg, "terms_checkbox_labels", []) or [])
+        return any(cls._TERMS_RE.search(texto) for texto in textos if texto)
+
+    def _accept_terms_if_needed(
+        self, page: Any, estado: dict[str, Any], cfg: Any
+    ) -> Any:
+        """Aceita apenas o checkbox de termos configurado no portal conhecido."""
+        if cfg is None or not getattr(cfg, "terms_checkbox_required", False):
+            return page
+        todos = list(estado.get("checkboxes") or [])
+        relevantes = [item for item in todos if self._is_terms_checkbox(item, cfg)]
+        pendentes = [item for item in relevantes if not item.get("checked")]
+        if not pendentes:
+            if estado.get("terms_checkbox") and not relevantes:
+                raise HumanActionRequired(
+                    "termos",
+                    "o portal exige aceite de termos, mas o checkbox não foi encontrado",
+                )
+            return page
+
+        for item in pendentes:
+            frame = self._frame_at(page, int(item.get("frame_index") or 0))
+            texto = str(item.get("text") or item.get("aria") or "")
+            clicou = False
+            rotulos = [texto] + list(getattr(cfg, "terms_checkbox_labels", []) or [])
+            for rotulo in rotulos:
+                if not rotulo:
+                    continue
+                try:
+                    locator = frame.get_by_text(rotulo, exact=False)
+                    for indice in range(min(int(locator.count() or 0), 4)):
+                        alvo = locator.nth(indice)
+                        if hasattr(alvo, "is_visible") and not alvo.is_visible():
+                            continue
+                        alvo.click()
+                        clicou = True
+                        break
+                except Exception:
+                    continue
+                if clicou:
+                    break
+            if not clicou:
+                try:
+                    clicou = bool(frame.evaluate(self._JS_CHECK_TERMS, texto))
+                except Exception:
+                    clicou = False
+            if not clicou:
+                raise HumanActionRequired(
+                    "termos", "não foi possível marcar o aceite de termos exibido"
+                )
+            page.wait_for_timeout(400)
+
+        novo = self._landing_state(page)
+        ainda_pendente = [
+            item
+            for item in (novo.get("checkboxes") or [])
+            if self._is_terms_checkbox(item, cfg) and not item.get("checked")
+        ]
+        if ainda_pendente:
+            raise HumanActionRequired(
+                "termos", "o aceite de termos não foi confirmado na tela"
+            )
+        log_event(
+            "portal_terms_accepted",
+            domain=domain_of(str(novo.get("url") or page.url)),
+            company=cfg.company,
+        )
+        return page
+
+    def _ensure_external_entry(
+        self,
+        page: Any,
+        known_portal: bool = False,
+        snapshot: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Lê a tela antes de agir: termos, login OAuth ou barreira humana."""
+        estado = self._observe_screen(page)
+        if estado.get("blocked"):
+            raise BlockedByPlatformError("verificação/CAPTCHA na entrada do portal")
+        settings = getattr(self, "settings", None)
+        cfg = None
+        if settings is not None:
+            dominio = domain_of(str(estado.get("url") or page.url))
+            cfg = settings.application.portal_auth.get(dominio)
+        if cfg is not None:
+            if known_portal or estado.get("login") or estado.get("terms_checkbox"):
+                page = self._accept_terms_if_needed(page, estado, cfg)
+                page = self._ensure_portal_login(page)
+                snapshot = snapshot_form(page)
+            else:
+                snapshot = snapshot or {}
+        else:
+            if estado.get("login") or estado.get("passwords"):
+                snapshot = snapshot if snapshot is not None else snapshot_form(page)
+                self._ensure_no_login(page, snapshot)
+            else:
+                snapshot = snapshot or {}
+        return page, snapshot
+
     def _advance_external_landing(self, page: Any) -> Any:
         """Abre o formulário real em landing externa, com decisão aprendível.
 
-        A landing pode mostrar apenas atalhos de perfil ("Usar meu currículo",
-        "Aplicar com LinkedIn") sem ``input[type=file]``. O agente interpreta o
-        estado real, escolhe o CTA que leva ao formulário e memoriza a decisão
-        após o envio concluído. Nunca toca login/OAuth/CAPTCHA.
+        O agente lê o estado renderizado (incluindo iframes) antes de cada
+        clique. Se a tela for login, ele usa apenas autenticação configurada
+        (OAuth Google com termos aceitos); senão escolhe o CTA que abre o
+        formulário real. Nunca toca login não configurado, senha ou CAPTCHA.
         """
-        state = page.evaluate(_LANDING_STATE_JS) or {}
-        if state.get("blocked"):
-            raise BlockedByPlatformError("verificação/CAPTCHA na landing externa")
-        if state.get("has_file") or state.get("has_form"):
-            return page
+        clicados: set[tuple[str, str]] = set()
+        decidido: Any = None
+        acao = ""
+        rotulos: list[str] = []
+        for _ in range(4):
+            page, _ = self._ensure_external_entry(page)
+            state = self._observe_screen(page)
+            if state.get("blocked"):
+                raise BlockedByPlatformError("verificação/CAPTCHA na landing externa")
+            if state.get("has_form") or state.get("has_file"):
+                break
+            if state.get("login"):
+                raise HumanActionRequired(
+                    "login", "a landing externa pediu login e não tem automação configurada"
+                )
 
-        botoes = [
-            item
-            for item in (state.get("buttons") or [])
-            if str(item.get("text") or "").strip()
-        ]
-        sociais = re.compile(
-            r"linkedin|indeed|google|facebook|apple|oauth|sign in|iniciar sess|"
-            r"acceder|entrar|login",
-            re.I,
-        )
-        botoes = [item for item in botoes if not sociais.search(str(item.get("text", "")))]
-        rotulos = [str(item["text"]).strip() for item in botoes]
-        if not rotulos:
-            return page
-
-        dialog = {
-            "url": str(state.get("url", "") or ""),
-            "text": str(state.get("text", "") or ""),
-            "buttons": botoes,
-        }
-        decision = self._decide_ui_action(
-            "open_external_apply", dialog, "landing externa sem formulário"
-        )
-        acao = str(getattr(decision, "action", "") or "").strip()
-        if getattr(decision, "needs_human", False):
-            raise HumanActionRequired(
-                "landing externa",
-                str(getattr(decision, "reason", "") or "nenhum CTA seguro identificado"),
+            botoes = [
+                item
+                for item in (state.get("buttons") or [])
+                if str(item.get("text") or "").strip()
+            ]
+            url_atual = self._normalize_landing_signature([str(state.get("url") or "")])
+            sociais = re.compile(
+                r"linkedin|indeed|facebook|apple|oauth|sign in|iniciar sess|"
+                r"acceder|entrar|login",
+                re.I,
             )
-        if not acao or acao not in rotulos:
-            raise ValidationError("CTA de candidatura não identificado na landing externa")
-        if not self._click_landing_cta(page, acao):
-            raise ValidationError("falha ao abrir o formulário na landing externa")
+            # Banners de cookie, navegação e atalhos sociais não abrem formulário.
+            irrelevantes = re.compile(
+                r"cookie|privac|privacy|decline|accept|reject|skip to|main menu|"
+                r"home|search for jobs|introduce yourself|english|portugu",
+                re.I,
+            )
+            botoes = [
+                item
+                for item in botoes
+                if not sociais.search(str(item.get("text", "")))
+                and not irrelevantes.search(str(item.get("text", "")))
+                and (
+                    url_atual,
+                    self._normalize_landing_signature([str(item.get("text", ""))]),
+                )
+                not in clicados
+            ]
+            candidatura = re.compile(
+                r"apply|aplicar|candidat|inscri|submit application|start application",
+                re.I,
+            )
+            explicitos = [
+                item for item in botoes if candidatura.search(str(item.get("text", "")))
+            ]
+            if explicitos:
+                botoes = explicitos
+            rotulos = [str(item["text"]).strip() for item in botoes]
+            if not rotulos:
+                break
 
-        antes = {id(p) for p in page.context.pages}
-        page.wait_for_timeout(2500)
-        novas = [p for p in page.context.pages if id(p) not in antes]
-        if novas:
-            for extra in novas[1:]:
-                self.browser.close_tab(extra)
-            self.browser.close_tab(page)
-            page = novas[0]
-            page.wait_for_timeout(1500)
+            dialog = {
+                "url": str(state.get("url", "") or ""),
+                "text": str(state.get("text", "") or ""),
+                "buttons": botoes,
+            }
+            decidido = self._decide_ui_action(
+                "open_external_apply", dialog, "landing externa sem formulário"
+            )
+            acao = str(getattr(decidido, "action", "") or "").strip()
+            if getattr(decidido, "needs_human", False):
+                raise HumanActionRequired(
+                    "landing externa",
+                    str(
+                        getattr(decidido, "reason", "")
+                        or "nenhum CTA seguro identificado"
+                    ),
+                )
+            normalizados = {
+                self._normalize_landing_signature([label]) for label in rotulos
+            }
+            if not acao or self._normalize_landing_signature([acao]) not in normalizados:
+                raise ValidationError("CTA de candidatura não identificado na landing externa")
+            clicados.add(
+                (url_atual, self._normalize_landing_signature([acao]))
+            )
+            if not self._click_landing_cta(page, acao, botoes):
+                raise ValidationError("falha ao abrir o formulário na landing externa")
 
-        status = page.evaluate(_LANDING_STATE_JS) or {}
+            antes = {id(p) for p in page.context.pages}
+            page.wait_for_timeout(2500)
+            novas = [p for p in page.context.pages if id(p) not in antes]
+            if novas:
+                for extra in novas[1:]:
+                    self.browser.close_tab(extra)
+                self.browser.close_tab(page)
+                page = novas[0]
+                page.wait_for_timeout(1500)
+
+        status = self._observe_screen(page)
         if status.get("blocked"):
             raise BlockedByPlatformError("verificação/CAPTCHA após abrir o formulário")
         snapshot = snapshot_form(page)
         self._ensure_no_login(page, snapshot)
-        source = str(getattr(decision, "source", "") or "llm")[:40]
-        reason = str(getattr(decision, "reason", "") or "")[:240]
-        log_event(
-            "browser_apply_landing_advanced",
-            action=acao[:80],
-            source=source,
-            url=page.url[:160],
-        )
-        self._queue_ui_action(
-            {
-                "url": str(status.get("url", "") or page.url),
-                "intent": "open_external_apply",
-                "trigger": "landing externa sem formulário",
-                "action": acao,
-                "dialog_signature": self._normalize_landing_signature(rotulos),
-                "source": source,
-                "reason": reason,
-            }
-        )
+        if decidido is not None and acao:
+            source = str(getattr(decidido, "source", "") or "llm")[:40]
+            reason = str(getattr(decidido, "reason", "") or "")[:240]
+            log_event(
+                "browser_apply_landing_advanced",
+                action=acao[:80],
+                source=source,
+                url=str(page.url or "")[:160],
+            )
+            self._queue_ui_action(
+                {
+                    "url": str(status.get("url", "") or page.url),
+                    "intent": "open_external_apply",
+                    "trigger": "landing externa sem formulário",
+                    "action": acao,
+                    "dialog_signature": self._normalize_landing_signature(rotulos),
+                    "source": source,
+                    "reason": reason,
+                }
+            )
         return page
 
     def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
@@ -806,8 +1224,7 @@ class BrowserApplyAgent:
         destino = None
         for _ in range(8):
             for candidata in contexto.pages:
-                url = str(candidata.url or "")
-                if domain_of(url) == dominio and not _is_login_page(url, ""):
+                if self._authenticated_page(candidata, dominio):
                     destino = candidata
                     break
             if destino is not None:
@@ -835,7 +1252,7 @@ class BrowserApplyAgent:
         """
         snapshot = snapshot_form(page)
         url = str(snapshot.get("url", "") or page.url)
-        if not _is_login_page(url, str(snapshot.get("text", "") or "")):
+        if not self._portal_needs_login(page, snapshot):
             return page
         dominio = domain_of(url)
         cfg = self.settings.application.portal_auth.get(dominio)
@@ -880,7 +1297,7 @@ class BrowserApplyAgent:
         snapshot = snapshot_form(page)
         url = str(snapshot.get("url", "") or page.url)
         texto = str(snapshot.get("text", "") or "").lower()
-        if _is_login_page(url, texto):
+        if self._portal_needs_login(page, snapshot):
             sinais_verificacao = (
                 "captcha", "just a moment", "verificação", "verificacao",
                 "verificacion", "confirm you are human", "mfa", "2fa",
@@ -1029,6 +1446,18 @@ class BrowserApplyAgent:
         )
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")
+        # O card da vaga pode dizer "Híbrido" mesmo quando a descrição afirma
+        # "100% remoto". O rótulo explícito do cabeçalho vence a descrição.
+        cabecalho = " ".join(
+            [
+                str(job.title or ""),
+                str(job.location or ""),
+                str(snapshot.get("title") or ""),
+                page_text[:600],
+            ]
+        )
+        if has_explicit_onsite_label(cabecalho):
+            raise ValidationError("card da vaga marca híbrido/presencial; envio bloqueado")
 
     def _decide_ui_action(
         self, intent: str, dialog: dict[str, Any], trigger: str

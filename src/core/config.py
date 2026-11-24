@@ -251,6 +251,10 @@ class PortalAuthConfig(BaseModel):
             "Continue to Applicant Site", "Aceitar e continuar",
         ]
     )
+    # Alguns portais exigem aceite explícito antes de habilitar o OAuth.
+    # O agente lê o checkbox na tela e marca somente quando configurado aqui.
+    terms_checkbox_required: bool = False
+    terms_checkbox_labels: list[str] = Field(default_factory=list)
     # Sinais de que a candidatura JÁ existe no portal — nunca reenviar.
     already_applied_markers: list[str] = Field(
         default_factory=lambda: [
@@ -287,7 +291,19 @@ class ApplicationConfig(BaseModel):
                 oauth_account_email="addamreis@gmail.com",
                 submit_labels=["Ingresar"],
                 assessment_status="completed",
-            )
+            ),
+            "app.alignerr.com": PortalAuthConfig(
+                company="Alignerr",
+                login_url="https://app.alignerr.com/signin",
+                auth_mode="google",
+                oauth_account_email="addamreis@gmail.com",
+                oauth_labels=["Continue with Google", "Entrar com Google"],
+                terms_checkbox_required=True,
+                terms_checkbox_labels=[
+                    "I agree to the Terms of Service, Privacy Policy and Release Agreement",
+                    "Concordo com os Termos de Serviço, Política de Privacidade e Acordo de Liberação",
+                ],
+            ),
         }
     )
     channel_priority: list[str] = Field(
