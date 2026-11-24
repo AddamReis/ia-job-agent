@@ -4,8 +4,10 @@ app:
   mode: "assisted"          # assisted | autonomous
 
 llm:
-  # Somente o LLM local do DGX. Sem LM Studio/Ollama nesta maquina.
+  # Somente LLMs locais do DGX. Sem LM Studio/Ollama nesta maquina.
+  # Apply/desenvolvimento usam o 27B denso; runners usam o MoE menor em :8012.
   primary: "dgx"
+  runner: "dgx_runner"
   fallback: null
   temperature: 0.1
   max_retries: 2
@@ -15,6 +17,12 @@ llm:
       type: "openai_compatible"
       base_url: "http://10.10.10.2:8011/v1"
       model: "qwen3.8-27b-nvfp4"
+      api_key: "vllm"
+      timeout_seconds: 300
+    dgx_runner:
+      type: "openai_compatible"
+      base_url: "http://10.10.10.2:8012/v1"
+      model: "qwen36_nvfp4"
       api_key: "vllm"
       timeout_seconds: 300
 

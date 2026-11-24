@@ -14,6 +14,7 @@ from src.agents.classification_worker import (
     ClassificationWorker,
     sort_for_classification,
 )
+from src.agents.submit_worker import SubmitWorker
 from src.core.config import Settings
 from src.core.events import EventBus
 from src.core.state import JobStatus
@@ -93,6 +94,11 @@ class StubRepo:
 
     def get_approval_for_job(self, job_id: str) -> ApprovalRequest | None:
         return self.approvals.get(job_id)
+
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        return next(
+            (item for item in self.approvals.values() if item.id == approval_id), None
+        )
 
     @staticmethod
     def agent_event_id(consumer: str, event_type: str, job_id: str) -> str:
@@ -174,6 +180,32 @@ class RecordingApplyAgent:
 
     def submit(self, *args, **kwargs):
         raise AssertionError("worker de aplicação NUNCA deve chamar submit")
+
+
+class RecordingSubmitAgent:
+    def __init__(self) -> None:
+        self.calls: list[tuple[JobOpportunity, ApprovalRequest, bool]] = []
+
+    def submit(self, job: JobOpportunity, approval: ApprovalRequest, *, confirmed: bool = False):
+        self.calls.append((job, approval, confirmed))
+        return object()
+
+
+def _approved_job(*, posted_at=None) -> tuple[JobOpportunity, ApprovalRequest]:
+    job = _job("Acme", "Senior .NET Developer", status=JobStatus.PENDING_APPROVAL)
+    job.score = 88
+    job.qualification = QualificationResult(
+        score=88, breakdown={}, decision="APPLY", reasons=[]
+    )
+    if posted_at is not None:
+        job.posted_at = posted_at
+    approval = ApprovalRequest(
+        opportunity_id=job.id,
+        company=job.company,
+        title=job.title,
+        status="APPROVED",
+    )
+    return job, approval
 
 
 def test_classification_prioritizes_trusted_portal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -322,3 +354,44 @@ def test_outbox_event_for_job_out_of_queue_is_dropped() -> None:
     assert counters["events"] == 1
     assert counters["total"] == 0
     assert repo.events[event_id]["status"] == "ACK"
+
+
+def test_submit_worker_sends_only_after_review_check() -> None:
+    job, approval = _approved_job()
+    repo = StubRepo([job])
+    repo.approvals[job.id] = approval
+    repo.publish_agent_event(
+        "apply_submit", "review.approved", job.id, {"approval_id": approval.id}
+    )
+    agent = RecordingSubmitAgent()
+    bus = EventBus()
+    events: list[str] = []
+    bus.subscribe("*", lambda event: events.append(event.type))
+
+    counters = SubmitWorker(repo, _settings(), agent, bus).run()
+
+    event_id = repo.agent_event_id("apply_submit", "review.approved", job.id)
+    assert counters == {"events": 1, "submitted": 1, "blocked": 0, "errors": 0}
+    assert [(item[0].id, item[1].id, item[2]) for item in agent.calls] == [
+        (job.id, approval.id, True)
+    ]
+    assert repo.events[event_id]["status"] == "ACK"
+    assert "application.submitted" in events
+
+
+def test_submit_worker_revalidates_recency_before_sending() -> None:
+    job, approval = _approved_job(posted_at=datetime.now() - timedelta(days=2))
+    repo = StubRepo([job])
+    repo.approvals[job.id] = approval
+    repo.publish_agent_event(
+        "apply_submit", "review.approved", job.id, {"approval_id": approval.id}
+    )
+    agent = RecordingSubmitAgent()
+
+    counters = SubmitWorker(repo, _settings(), agent).run()
+
+    event_id = repo.agent_event_id("apply_submit", "review.approved", job.id)
+    assert counters == {"events": 1, "submitted": 0, "blocked": 1, "errors": 0}
+    assert agent.calls == []
+    assert repo.events[event_id]["status"] == "FAILED"
+    assert "recência" in repo.events[event_id]["error"]

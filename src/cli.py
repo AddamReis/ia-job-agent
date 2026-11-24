@@ -18,6 +18,7 @@ from .agents.agent_runtime import run_worker_loop
 from .agents.application_worker import ApplicationWorker
 from .agents.browser_apply import BrowserApplyAgent
 from .agents.classification_worker import ClassificationWorker
+from .agents.submit_worker import SubmitWorker
 from .agents.company_suppression import CompanySuppressionAgent
 from .agents.discovery import DiscoveryAgent
 from .agents.fast_lane import FastLaneAgent
@@ -74,6 +75,21 @@ def _application_worker(orchestrator: Orchestrator) -> ApplicationWorker:
     return ApplicationWorker(
         orchestrator.repo, settings, agent, orchestrator.bus
     )
+
+
+def _submit_worker(orchestrator: Orchestrator) -> SubmitWorker:
+    settings = orchestrator.settings
+    agent = BrowserApplyAgent(
+        orchestrator.repo,
+        settings,
+        orchestrator.profile,
+        orchestrator.resolver,
+        orchestrator.gate,
+        orchestrator.bus,
+        cdp_url=settings.browser.cdp_url,
+        memory=orchestrator.qualification_memory,
+    )
+    return SubmitWorker(orchestrator.repo, settings, agent, orchestrator.bus)
 
 
 def _worker_interval() -> float:
@@ -514,6 +530,44 @@ def application_serve() -> None:
         callback=worker.run,
         interval_seconds=_worker_interval(),
     )
+
+
+@app.command("apply-submit-run")
+def apply_submit_run(
+    limit: int = typer.Option(0, "--limit", help="Máximo de envios nesta rodada (0 = todos)."),
+) -> None:
+    """Consome checks aprovados na PWA e envia após revalidação determinística."""
+    worker = _submit_worker(_orchestrator())
+    counters = worker.run(limit or None)
+    console.print(json.dumps(counters, ensure_ascii=False))
+
+
+@app.command("apply-submit-serve")
+def apply_submit_serve(
+    interval: float = typer.Option(
+        30.0, "--interval", help="Intervalo de verificação do outbox de aprovações."
+    ),
+) -> None:
+    """Loop do envio autorizado pela PWA; usa a mesma trava da aplicação."""
+    orchestrator = _orchestrator()
+    worker = _submit_worker(orchestrator)
+    run_worker_loop(
+        orchestrator.repo,
+        name="application",
+        callback=worker.run,
+        interval_seconds=max(1.0, interval),
+    )
+
+
+@app.command("review-serve")
+def review_serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind do servidor da PWA."),
+    port: int = typer.Option(8765, "--port", help="Porta local da PWA."),
+) -> None:
+    """Sobe a plataforma intermediária de revisão das vagas classificadas."""
+    from .web.review_app import run_server
+
+    run_server(host, port)
 
 
 @app.command()

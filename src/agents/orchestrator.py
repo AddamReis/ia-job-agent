@@ -76,7 +76,16 @@ class Orchestrator:
         self.profile = self.repo.load_profile(CandidateProfile) or build_profile(settings)
         self.repo.save_profile(self.profile)
 
+        # Dois providers no mesmo DGX: o runner (MoE menor) faz extração e
+        # classificação; o principal (27B) fica com Apply e testes complexos.
         self.llm = LLMRouter(settings, self.bus)
+        runner_name = settings.llm.runner or settings.llm.primary
+        self.runner_llm = (
+            self.llm
+            if runner_name == settings.llm.primary
+            else LLMRouter(settings, self.bus, name=runner_name)
+        )
+        log_event("llm_routes", apply=self.llm.primary_name, runner=self.runner_llm.primary_name)
         unlock = settings.device.unlock_secret
         self.adb = ADBClient(
             settings.device.adb_path,
@@ -102,13 +111,13 @@ class Orchestrator:
         self.current_trace_id = ""
         self.dependencies = DependencyAgent(self.repo, settings, self.bus)
         self.repo.seed_known_companies()
-        self.eligibility = EligibilityAgent(settings, self.llm, self.repo)
+        self.eligibility = EligibilityAgent(settings, self.runner_llm, self.repo)
         # Supressão temporária: confirmada em outras vagas antes de marcar a empresa.
         self.company_suppression = CompanySuppressionAgent(
-            settings, self.repo, self.llm, eligibility=self.eligibility
+            settings, self.repo, self.runner_llm, eligibility=self.eligibility
         )
         self.qualification = JobQualificationAgent(
-            self.llm, self.profile, self.repo, settings, self.bus,
+            self.runner_llm, self.profile, self.repo, settings, self.bus,
             self.dependencies, self.eligibility,
             suppression=self.company_suppression,
             memory=self.qualification_memory,

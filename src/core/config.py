@@ -29,6 +29,9 @@ class ProviderConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     primary: str = "dgx"
+    # Runner (classificação/eligibilidade/supressão) pode usar um modelo menor,
+    # também na DGX. Apply/desenvolvimento continuam em ``primary``.
+    runner: str | None = None
     # Nunca usar fallback: LM Studio/Ollama são proibidos nesta máquina.
     fallback: str | None = Field(default=None, exclude=True)
     temperature: float = 0.1

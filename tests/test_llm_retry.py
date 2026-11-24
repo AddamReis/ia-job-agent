@@ -58,3 +58,39 @@ def test_persistent_timeout_raises_after_configured_retries(
     with pytest.raises(LLMError, match="Todos os backends falharam"):
         router.chat([{"role": "user", "content": "oi"}])
     assert backend.calls == 3
+
+
+def test_named_router_uses_only_the_requested_dgx_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chamados: list[str] = []
+
+    def build(name: str, settings: Settings) -> FakeBackend:
+        chamados.append(name)
+        backend = FakeBackend(0)
+        backend.name = name
+        return backend
+
+    monkeypatch.setattr(factory, "build_backend", build)
+    base = Settings()
+    settings = base.model_copy(
+        update={
+            "llm": base.llm.model_copy(
+                update={
+                    "primary": "dgx",
+                    "runner": "dgx_runner",
+                    "providers": {
+                        "dgx": ProviderConfig(base_url="http://10.10.10.2:8011/v1", model="27b"),
+                        "dgx_runner": ProviderConfig(
+                            base_url="http://10.10.10.2:8012/v1", model="moe"
+                        ),
+                    },
+                }
+            )
+        }
+    )
+
+    router = LLMRouter(settings, name=settings.llm.runner)
+
+    assert chamados == ["dgx_runner"]
+    assert router.primary_name == "dgx_runner"

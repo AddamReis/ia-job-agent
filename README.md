@@ -25,12 +25,15 @@ src/agents/    → discovery | classification | apply | fast_lane (cada um com e
                 → watermark por slot + âncora de tempo congelada
                          |
                          ▼
-[DGX Spark]  ClassificationWorker → FastLane (BairesDev/Strider) ou LLM DGX → QUALIFIED
+[DGX Spark]  ClassificationWorker → FastLane (BairesDev/Strider) ou LLM runner → QUALIFIED
                          |
                          ▼  agent_events (outbox persistente, consumer=application)
 [máquina local]  ApplicationWorker → revalida recência/remoto/moeda → rota do portal
-                         → BrowserApplyAgent.prepare() → PENDING_APPROVAL → APPROVED humano
-                         → browser-apply --submit-only (único caminho de Submit)
+                         → BrowserApplyAgent.prepare() → PENDING_APPROVAL
+                         ▼
+[DGX] PWA de revisão (Tailscale) → check humano → APPROVED
+                         ▼  agent_events (consumer=apply_submit)
+[máquina local]  SubmitWorker → revalida novamente → Submit (última etapa, com CDP)
 ```
 
 - `reference_time` é capturado **uma vez** no início da execução; todas as queries usam a
@@ -60,18 +63,30 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
       → job.classified / job.qualified (com job_id)
       → publish_agent_event("application", "job.qualified", job_id)
 
+[DGX] review-serve (PWA via Tailscale Serve)
+  → listas: a classificar / recusadas / aprovadas
+  → check do operador: revalida remoto, moeda, recência e score
+      → ReviewDecisionRow + resolve_approval(APPROVED)
+      → publish_agent_event("apply_submit", "review.approved", job_id)
+
 [local, com o mesmo AI_JOB_DATABASE_URL e CDP 127.0.0.1:9222]
   application-serve
   → ApplicationWorker.run()      # QUALIFIED; revalida recência/remoto/moeda antes do CDP
       → claim_agent_events("application") + ack
       → portal known? ApplyRoute (EASY_APPLY / KNOWN_PORTAL / EXTERNAL_SIGNUP)
       → BrowserApplyAgent.prepare() → PENDING_APPROVAL
-      → FIM. Nenhum Submit é feito por estes workers.
+      → FIM. Nenhum Submit é feito por este worker.
+  apply-submit-serve
+  → SubmitWorker.run()           # consome somente o check aprovado na PWA
+      → repete revalidações determinísticas
+      → BrowserApplyAgent.submit(confirmed=True)
+      → CAPTCHA/MFA/verificação => evento FAILED, sem retry/burla
 ```
 
-- `classification-run` / `classification-serve` e `application-prepare-run` /
-  `application-serve` permitem operar cada agente isoladamente. O intervalo dos loops
-  é `AI_JOB_WORKER_INTERVAL_SECONDS` (padrão 300s).
+- `classification-run` / `classification-serve`, `application-prepare-run` /
+  `application-serve` e `apply-submit-run` / `apply-submit-serve` permitem operar cada
+  agente isoladamente. O intervalo dos loops de preparação/classificação é
+  `AI_JOB_WORKER_INTERVAL_SECONDS` (padrão 300s); o de envio usa `--interval` (padrão 30s).
 - O **outbox** `agent_events` é o handoff entre processos: a DGX classifica e publica o
   `job_id`; o worker local consome, faz `ack` e reencontra o trabalho no banco mesmo após
   restart. Eventos `PROCESSING` órfãos são recuperados após 15 min. Publicar o mesmo
@@ -85,15 +100,20 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   reutiliza padrões de formulário já aprendidos por domínio e aprende novos após envios
   bem-sucedidos. **Zaply** (envio simplificado) corresponde à rota `EASY_APPLY` do mesmo
   `BrowserApplyAgent`. Não há integração externa com produtos de mesmo nome neste repositório.
-- O envio continua **exclusivo** de `browser-apply --submit-only`, que exige `APPROVED`
-  persistido pelo `ApprovalGate`. CAPTCHA/MFA/verificação nunca são resolvidos.
+- O envio continua exigindo `APPROVED` persistido; a PWA é a interface que registra essa
+  decisão e publica o aviso para o `apply-submit-serve`. `ApprovalGate` e `submit()` não
+  foram alterados. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
 
 Operação local (o Chrome já logado precisa estar com CDP em `127.0.0.1:9222`):
 
 ```powershell
 $env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jobs'
 .\.venv\Scripts\python -m src.cli application-serve
+.\.venv\Scripts\python -m src.cli apply-submit-serve --interval 30
 ```
+
+A PWA de revisão roda na DGX e é publicada somente na tailnet em
+`https://dgx-spark.tail040a06.ts.net/` (Tailscale Serve → `127.0.0.1:8765`).
 
 - **Playwright + Chrome real**: fonte padrão de descoberta. Lê o `ItemList` em JSON-LD da busca
   pública (ID real da vaga, título, empresa, local) e a descrição da página `jobs/view/<id>`.
@@ -101,9 +121,13 @@ $env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jo
 - **ADB + Appium/UiAutomator2**: usados **somente no celular**, para descobrir o botão de Easy
   Apply e aplicar na vaga aprovada, abrindo a URL pública `https://www.linkedin.com/jobs/view/<id>`.
   Nunca são usados como fonte de descoberta (`browser.fallback_to_android: false`).
-- **LLM**: somente DGX Spark `qwen3.8-27b-nvfp4` via API compatível com OpenAI
-  (`llm.primary: dgx`, `llm.fallback: null`, timeout 300s). O modo "thinking" do Qwen3 é
-  desligado (`enable_thinking=false`) para evitar respostas presas.
+- **LLM**: somente dois endpoints locais na DGX Spark, ambos via API compatível com OpenAI,
+  com `api_key: vllm` e timeout 300s. `llm.primary` (`dgx`, `http://10.10.10.2:8011/v1`)
+  usa o denso `qwen3.8-27b-nvfp4` para Apply/respostas e desenvolvimento; `llm.runner`
+  (`dgx_runner`, `http://10.10.10.2:8012/v1`) usa o MoE NVFP4 menor `qwen36_nvfp4` para
+  extração, elegibilidade, supressão e classificação. `llm.fallback: null`: nunca há
+  Ollama, LM Studio ou API paga. O modo "thinking" do Qwen3 é desligado
+  (`enable_thinking=false`) para evitar respostas presas.
 - **Perfil como fonte de verdade**: `CandidateProfile` derivado do CV real
   (`Addam dos Reis Oliveira - Software Engineer.pdf`, 11/11/2026). Toda resposta carrega origem;
   sem evidência, o campo vira `REQUIRES_HUMAN_ACTION`.

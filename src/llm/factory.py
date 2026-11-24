@@ -43,17 +43,28 @@ def build_backend(name: str, settings: Settings) -> LLMBackend:
 class LLMRouter:
     """Usa somente o DGX. Nenhum fallback local e nenhuma API paga."""
 
-    def __init__(self, settings: Settings, bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        bus: EventBus | None = None,
+        name: str | None = None,
+    ) -> None:
+        """Cria um roteador para uma tarefa.
+
+        ``name=None`` usa o provider principal (Apply/desenvolvimento). Tarefas
+        de runner informam ``settings.llm.runner`` explicitamente; ambos os
+        providers precisam estar no mesmo DGX — nunca há fallback externo.
+        """
         self.settings = settings
         self.bus = bus
         self.backends: list[LLMBackend] = []
-        for name in [settings.llm.primary]:
-            if not name:
+        for provider_name in [name or settings.llm.primary]:
+            if not provider_name:
                 continue
             try:
-                self.backends.append(build_backend(name, settings))
+                self.backends.append(build_backend(provider_name, settings))
             except LLMError as exc:
-                log_event("llm_backend_invalido", backend=name, error=str(exc))
+                log_event("llm_backend_invalido", backend=provider_name, error=str(exc))
         if not self.backends:
             raise LLMError("Nenhum backend LLM disponível")
 

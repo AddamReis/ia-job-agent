@@ -162,6 +162,20 @@ class ApprovalRow(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class ReviewDecisionRow(Base):
+    """Decisão tomada na plataforma intermediária (quem decidiu e por quê)."""
+
+    __tablename__ = "review_decisions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    opportunity_id: Mapped[str] = mapped_column(String, index=True)
+    approval_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    decision: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer: Mapped[str] = mapped_column(String, nullable=False, default="operator")
+    checks: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class QualificationFeedbackRow(Base):
     """Memória local de classificação: correções humanas e desfechos."""
 
@@ -1212,6 +1226,63 @@ class Repository:
                 .order_by(ApprovalRow.created_at.desc())
             )
             return ApprovalRequest.model_validate(json.loads(row.data)) if row else None
+
+    # ---- decisões da plataforma intermediária ----
+    def record_review_decision(
+        self,
+        opportunity_id: str,
+        decision: str,
+        *,
+        approval_id: str | None = None,
+        reviewer: str = "operator",
+        checks: dict[str, Any] | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Registra Aprovar/Rejeitar com auditoria e devolve o registro."""
+        payload = {
+            "id": str(uuid4()),
+            "opportunity_id": opportunity_id,
+            "approval_id": approval_id,
+            "decision": decision,
+            "reviewer": reviewer,
+            "checks": checks or {},
+            "note": note,
+            "created_at": datetime.now().isoformat(),
+        }
+        with self.session() as session:
+            session.add(
+                ReviewDecisionRow(
+                    id=payload["id"],
+                    opportunity_id=opportunity_id,
+                    approval_id=approval_id,
+                    decision=decision,
+                    reviewer=reviewer,
+                    checks=json.dumps(payload["checks"], ensure_ascii=False),
+                    note=note,
+                    created_at=payload["created_at"],
+                )
+            )
+        return payload
+
+    def get_review_decision_for_job(self, opportunity_id: str) -> dict[str, Any] | None:
+        with self.session() as session:
+            row = session.scalar(
+                select(ReviewDecisionRow)
+                .where(ReviewDecisionRow.opportunity_id == opportunity_id)
+                .order_by(ReviewDecisionRow.created_at.desc())
+            )
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "opportunity_id": row.opportunity_id,
+                "approval_id": row.approval_id,
+                "decision": row.decision,
+                "reviewer": row.reviewer,
+                "checks": json.loads(row.checks or "{}"),
+                "note": row.note,
+                "created_at": row.created_at,
+            }
 
     # ---- outbox de eventos entre workers ----
     @staticmethod
