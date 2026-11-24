@@ -301,6 +301,18 @@ class ApplicationConfig(BaseModel):
     )
     require_success_feedback: bool = True
 
+    # Evidências do Apply ficam em data/evidence/<job_id>/ em disco local: a
+    # leitura pela PWA é direta (sem bytea no Postgres). WebP/JPEG já são
+    # comprimidos — gzip extra renderia pouquíssimo e custaria CPU na leitura.
+    evidence_retention_days: int = 30
+    evidence_format: Literal["webp", "jpeg"] = "webp"
+    evidence_quality: int = Field(default=82, ge=1, le=100)
+
+    # Preflight do Chrome logado: o worker fica em standby (heartbeat no log)
+    # até o CDP 127.0.0.1:9222 responder. Nunca cria perfil nem exporta cookies.
+    cdp_wait_seconds: int = 1800
+    cdp_poll_seconds: float = 5.0
+
 
 class LimitsConfig(BaseModel):
     max_applications_per_day: int = 10

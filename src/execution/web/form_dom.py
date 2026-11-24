@@ -6,6 +6,7 @@ máquina; o preenchimento usa apenas o perfil local.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 import time
@@ -354,6 +355,41 @@ def click_next(page: Any, label: str = "") -> bool:
     return False
 
 
+def _capture_webp(page: Any, quality: int) -> bytes:
+    """Usa o próprio encoder WebP do Chrome via CDP (sem dependência nova).
+
+    Playwright só expõe PNG/JPEG em ``page.screenshot``; o CDP do Chrome aceita
+    ``format=webp``. Se a sessão não existir ou o Chrome não oferecer WebP,
+    devolvemos vazio para o chamador fazer fallback para JPEG.
+    """
+    context = getattr(page, "context", None)
+    factory = getattr(context, "new_cdp_session", None)
+    if not callable(factory):
+        return b""
+    sessao = None
+    try:
+        sessao = factory(page)
+        resposta = sessao.send(
+            "Page.captureScreenshot",
+            {
+                "format": "webp",
+                "quality": quality,
+                "captureBeyondViewport": False,
+                "fromSurface": True,
+            },
+        ) or {}
+        dados = str(resposta.get("data") or "")
+        return base64.b64decode(dados) if dados else b""
+    except Exception:
+        return b""
+    finally:
+        if sessao is not None:
+            try:
+                sessao.detach()
+            except Exception:
+                pass
+
+
 def capture_screenshot(
     page: Any,
     directory: str | Path,
@@ -361,10 +397,21 @@ def capture_screenshot(
     step: int,
     kind: str,
     label: str = "",
+    image_format: str = "webp",
+    quality: int = 82,
 ) -> dict[str, Any]:
-    """Salva um print local e devolve metadados com hash para anexar à vaga."""
+    """Salva um print WebP/JPEG local e devolve metadados com hash.
+
+    Nunca grava PNG novo: WebP é pedido ao Chrome via CDP e, na ausência dele,
+    o fallback é JPEG com qualidade controlada. O arquivo fica em disco; o banco
+    guarda só o caminho relativo e o hash (sem BLOB, sem gzip extra).
+    """
     if kind not in {"step", "confirmation"}:
         raise ValidationError(f"tipo de evidência desconhecido: {kind}")
+    qualidade = max(1, min(100, int(quality)))
+    payload = _capture_webp(page, qualidade) if str(image_format).lower() == "webp" else b""
+    extensao = "webp" if payload else "jpg"
+
     destino = Path(directory)
     destino.mkdir(parents=True, exist_ok=True)
     safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_")[:40]
@@ -372,16 +419,22 @@ def capture_screenshot(
     filename = f"step{int(step):02d}_{kind}_{stamp}"
     if safe_label:
         filename += f"_{safe_label}"
-    path = destino / f"{filename}.png"
-    payload = page.screenshot(path=str(path), full_page=False)
+    path = destino / f"{filename}.{extensao}"
+
+    if not payload:
+        # Playwright não aceita type="webp": o fallback é sempre JPEG.
+        payload = page.screenshot(
+            path=str(path), type="jpeg", quality=qualidade, full_page=False
+        )
     if not isinstance(payload, (bytes, bytearray)) or not payload:
         payload = path.read_bytes()
+    path.write_bytes(bytes(payload))
     return {
         "step": int(step),
         "kind": kind,
         "label": label[:200],
         "path": path.as_posix(),
-        "sha256": hashlib.sha256(payload).hexdigest(),
+        "sha256": hashlib.sha256(bytes(payload)).hexdigest(),
         "created_at": datetime.now().isoformat(),
     }
 

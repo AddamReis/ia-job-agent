@@ -82,18 +82,31 @@ def _snapshot(url: str, label: str, index: int = 0) -> dict:
 
 def _walk_agent(tmp_path: Path) -> BrowserApplyAgent:
     agent = object.__new__(BrowserApplyAgent)
-    agent.settings = Settings()
+    agent.settings = Settings(root=tmp_path)
     agent.patterns = SitePatternStore(tmp_path / "patterns.json")
     agent.resolver = FakeResolver()
     agent.profile = CandidateProfile()
     return agent
 
 
-def test_capture_screenshot_saves_file_with_hash(tmp_path: Path) -> None:
+def test_capture_screenshot_uses_chrome_webp_encoder(tmp_path: Path) -> None:
+    import base64
+
+    class Session:
+        def send(self, comando: str, payload: dict) -> dict:
+            assert comando == "Page.captureScreenshot"
+            assert payload["format"] == "webp"
+            assert payload["quality"] == 70
+            return {"data": base64.b64encode(b"webp-comprimido").decode("ascii")}
+
+        def detach(self) -> None:
+            return None
+
     class Page:
-        def screenshot(self, path: str, full_page: bool = False) -> bytes:
-            Path(path).write_bytes(b"conteudo-do-print")
-            return b"conteudo-do-print"
+        context = SimpleNamespace(new_cdp_session=lambda _page: Session())
+
+        def screenshot(self, **_kwargs) -> bytes:
+            raise AssertionError("WebP via CDP não deve usar page.screenshot")
 
     meta = capture_screenshot(
         Page(),
@@ -101,14 +114,42 @@ def test_capture_screenshot_saves_file_with_hash(tmp_path: Path) -> None:
         step=2,
         kind="step",
         label="Step 2 · 1 campo(s)",
+        quality=70,
     )
 
     arquivo = Path(meta["path"])
     assert arquivo.is_file()
-    assert meta["sha256"] == hashlib.sha256(b"conteudo-do-print").hexdigest()
-    assert len(meta["sha256"]) == 64
+    assert arquivo.suffix == ".webp"
+    assert arquivo.read_bytes() == b"webp-comprimido"
+    assert meta["sha256"] == hashlib.sha256(b"webp-comprimido").hexdigest()
     assert meta["step"] == 2
     assert meta["kind"] == "step"
+
+
+def test_capture_screenshot_falls_back_to_jpeg(tmp_path: Path) -> None:
+    class Session:
+        def send(self, *_args, **_kwargs) -> dict:
+            raise RuntimeError("Chrome sem WebP")
+
+        def detach(self) -> None:
+            return None
+
+    class Page:
+        context = SimpleNamespace(new_cdp_session=lambda _page: Session())
+
+        def screenshot(self, path: str, type: str, quality: int, full_page: bool) -> bytes:
+            assert type == "jpeg"
+            assert quality == 82
+            assert full_page is False
+            Path(path).write_bytes(b"jpeg-comprimido")
+            return b"jpeg-comprimido"
+
+    meta = capture_screenshot(
+        Page(), tmp_path / "data/evidence/job-2", step=1, kind="confirmation"
+    )
+
+    assert Path(meta["path"]).suffix == ".jpg"
+    assert Path(meta["path"]).read_bytes() == b"jpeg-comprimido"
 
 
 def test_click_next_only_uses_advance_labels() -> None:
@@ -302,12 +343,12 @@ def test_submit_attaches_step_and_confirmation_evidence(
     )
     monkeypatch.setattr(
         "src.agents.browser_apply.capture_screenshot",
-        lambda page, directory, *, step, kind, label: capturas.append(kind)
+        lambda page, directory, *, step, kind, label, **_kwargs: capturas.append(kind)
         or {
             "step": step,
             "kind": kind,
             "label": label,
-            "path": f"data/evidence/job-1/{kind}.png",
+            "path": f"data/evidence/job-1/{kind}.webp",
             "sha256": "abc",
             "created_at": "2026-11-24T10:00:00",
         },
@@ -344,7 +385,7 @@ def test_repository_roundtrip_keeps_evidence_and_review_decision(
         step=1,
         kind="step",
         label="Step 1 · 1 campo(s)",
-        path="data/evidence/job-1/step_01.png",
+        path="data/evidence/job-1/step_01.webp",
         sha256="abc",
     )
     application = Application(
@@ -367,13 +408,13 @@ def test_review_path_validation_blocks_traversal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(review, "_settings", lambda: Settings(root=tmp_path))
-    arquivo = tmp_path / "data/evidence/job-1/step_01.png"
+    arquivo = tmp_path / "data/evidence/job-1/step_01.webp"
     arquivo.parent.mkdir(parents=True)
-    arquivo.write_bytes(b"png")
+    arquivo.write_bytes(b"webp")
 
-    assert review.resolve_evidence_path("job-1", "step_01.png") == arquivo
-    assert review.resolve_evidence_path("job-1", "../segredo.png") is None
-    assert review.resolve_evidence_path("../etc", "passwd.png") is None
+    assert review.resolve_evidence_path("job-1", "step_01.webp") == arquivo
+    assert review.resolve_evidence_path("job-1", "../segredo.webp") is None
+    assert review.resolve_evidence_path("../etc", "passwd.webp") is None
     assert review.resolve_evidence_path("job-1", "cv.pdf") is None
 
 
@@ -393,7 +434,7 @@ def test_job_detail_exposes_application_and_decision_evidence(
         step=1,
         kind="step",
         label="Step 1",
-        path="data/evidence/job-1/step_01.png",
+        path="data/evidence/job-1/step_01.webp",
         sha256="abc",
     )
     application = Application(opportunity_id="job-1", evidence=[evidencia])
@@ -404,7 +445,7 @@ def test_job_detail_exposes_application_and_decision_evidence(
                     "step": 2,
                     "kind": "confirmation",
                     "label": "Confirmação",
-                    "path": "data/evidence/job-1/confirmation.png",
+                    "path": "data/evidence/job-1/confirmation.webp",
                     "sha256": "def",
                 }
             ]

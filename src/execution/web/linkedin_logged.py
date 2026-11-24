@@ -10,8 +10,12 @@ aprovação humana persistida antes de qualquer clique em Submit.
 """
 from __future__ import annotations
 
+import json
 import re
+import time
+from typing import Any, Callable
 from urllib.parse import unquote
+from urllib.request import urlopen
 
 from ...core.logging import log_event
 
@@ -34,6 +38,76 @@ class LoggedBrowserUnavailable(RuntimeError):
     """O Chrome logado não está acessível via CDP."""
 
 
+def cdp_browser_version(cdp_url: str, timeout: float = 3.0) -> str:
+    """Lê ``/json/version`` do Chrome logado — somente leitura, sem nova janela."""
+    endereco = f"{cdp_url.rstrip('/')}/json/version"
+    with urlopen(endereco, timeout=timeout) as resposta:  # noqa: S310 - URL local configurada
+        dados = json.loads(resposta.read().decode("utf-8", "replace"))
+    return str(dados.get("Browser") or "")
+
+
+def wait_for_cdp(
+    cdp_url: str,
+    *,
+    timeout_seconds: float = 1800.0,
+    poll_seconds: float = 5.0,
+    sleep: Callable[[float], None] | None = None,
+    stop: Any | None = None,
+    clock: Callable[[], float] | None = None,
+) -> bool:
+    """Preflight do apply: fica em standby até o CDP responder.
+
+    Não inicia Chrome, não cria perfil, não exporta cookies, não maximiza nem
+    fecha janela. O heartbeat no log distingue standby de processo travado.
+    Devolve ``False`` sem tocar nas vagas quando o tempo de espera se esgota.
+    """
+    esperar = sleep or time.sleep
+    relogio = clock or time.monotonic
+    limite = relogio() + max(0.0, float(timeout_seconds))
+    intervalo = max(0.1, float(poll_seconds))
+    tentativas = 0
+    ultimo_erro = "sem resposta"
+    log_event(
+        "application_cdp_preflight",
+        cdp_url=cdp_url,
+        wait_seconds=int(timeout_seconds),
+        poll_seconds=intervalo,
+    )
+    while True:
+        tentativas += 1
+        try:
+            versao = cdp_browser_version(cdp_url)
+            if versao:
+                log_event(
+                    "application_cdp_ready",
+                    browser=versao,
+                    attempts=tentativas,
+                )
+                return True
+            ultimo_erro = "resposta /json/version sem campo Browser"
+        except Exception as exc:
+            ultimo_erro = f"{type(exc).__name__}: {exc}"
+        if stop is not None and getattr(stop, "is_set", lambda: False)():
+            log_event("application_cdp_standby_cancelled", attempts=tentativas)
+            return False
+        restante = limite - relogio()
+        if restante <= 0:
+            log_event(
+                "application_cdp_timeout",
+                attempts=tentativas,
+                error=ultimo_erro[:200],
+            )
+            return False
+        if tentativas % 12 == 0:
+            log_event(
+                "application_cdp_standby",
+                attempts=tentativas,
+                remaining_seconds=int(restante),
+                error=ultimo_erro[:200],
+            )
+        esperar(min(intervalo, restante))
+
+
 class LinkedInLoggedBrowser:
     def __init__(self, cdp_url: str = "http://127.0.0.1:9222", timeout_ms: int = 60000) -> None:
         self.cdp_url = cdp_url
@@ -41,6 +115,16 @@ class LinkedInLoggedBrowser:
         self._playwright = None
         self._browser = None
         self._context = None
+
+    def wait_until_ready(
+        self, *, timeout_seconds: float = 1800.0, poll_seconds: float = 5.0
+    ) -> bool:
+        """Standby até o perfil logado estar alcançável via CDP."""
+        return wait_for_cdp(
+            self.cdp_url,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
 
     def connect(self) -> None:
         if self._context is not None:

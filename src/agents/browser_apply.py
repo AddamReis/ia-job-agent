@@ -48,6 +48,7 @@ from ..models.domain import (
     JobOpportunity,
 )
 from ..storage.database import Repository
+from ..storage.evidence_store import cleanup_expired
 from .approval import ApprovalGate
 from .qualification import classify_channel, is_remote_location
 from .qualification_memory import QualificationMemory
@@ -1070,6 +1071,8 @@ class BrowserApplyAgent:
                     step=step.number,
                     kind="step",
                     label=f"Step {step.number} · {len(selecionadas)} campo(s)",
+                    image_format=self.settings.application.evidence_format,
+                    quality=self.settings.application.evidence_quality,
                 )
                 evidencias.append(ApplicationEvidence.model_validate(metadados))
 
@@ -1119,6 +1122,8 @@ class BrowserApplyAgent:
                 step=steps[-1].number,
                 kind="confirmation",
                 label="Confirmação de envio",
+                image_format=self.settings.application.evidence_format,
+                quality=self.settings.application.evidence_quality,
             )
             evidencias.append(ApplicationEvidence.model_validate(metadados))
             domain = prepared.domain
@@ -1137,6 +1142,13 @@ class BrowserApplyAgent:
                 evidence=evidencias,
             )
             self.repo.record_application(application)
+            # Limpeza no envio: só evidências ANTIGAS da vaga saem; os prints
+            # recém-gravados ficam dentro da janela de 30 dias.
+            cleanup_expired(
+                self.settings.resolve("data/evidence"),
+                retention_days=self.settings.application.evidence_retention_days,
+                job_id=job.id,
+            )
             job.status = JobStatus.SUBMITTED
             job.has_applied = True
             job.applied_at = application.applied_at or datetime.now()

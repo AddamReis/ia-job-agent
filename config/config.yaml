@@ -218,6 +218,15 @@ application:
   # Prioridade geografica (antes do canal): America do Norte > AU > NZ > Europa > Brasil.
   region_priority: ["latam", "americas_north", "australia", "new_zealand", "europe", "brazil", "other"]
   require_success_feedback: true
+  # Evidências em disco local (data/evidence/<job_id>/), WebP/JPEG com qualidade
+  # controlada. gzip extra não vale a pena sobre imagem já comprimida.
+  evidence_retention_days: 30
+  evidence_format: "webp"        # webp | jpeg (jpeg é o fallback sem CDP)
+  evidence_quality: 82
+  # Antes de preparar/enviar, o worker espera o Chrome logado via CDP. Não cria
+  # perfil, não exporta cookies, não maximiza nem fecha a janela do operador.
+  cdp_wait_seconds: 1800
+  cdp_poll_seconds: 5
 
 limits:
   max_applications_per_day: 10

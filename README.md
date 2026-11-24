@@ -104,13 +104,23 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   decisão e publica o aviso para o `apply-submit-serve`. `ApprovalGate` e `submit()` não
   foram alterados. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
 
-Operação local (o Chrome já logado precisa estar com CDP em `127.0.0.1:9222`):
+Operação local: as rotinas de Apply fazem **preflight do CDP** e ficam em standby (heartbeat no
+log) até o Chrome já logado responder em `http://127.0.0.1:9222/json/version`. Elas reaproveitam
+o perfil/cookies existentes — nunca criam perfil, exportam cookies, maximizam ou fecham a janela.
+Se o CDP não responder em `cdp_wait_seconds` (padrão 1800s), nenhuma vaga é alterada.
 
 ```powershell
 $env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jobs'
 .\.venv\Scripts\python -m src.cli application-serve
 .\.venv\Scripts\python -m src.cli apply-submit-serve --interval 30
 ```
+
+Os prints por step e a confirmação ficam em `data/evidence/<job_id>/` em **WebP** (fallback
+JPEG) com qualidade configurável; o Postgres guarda apenas caminho relativo e hash — sem BLOB,
+sem gzip extra sobre imagem já comprimida. A retenção é de **30 dias** (`evidence_retention_days`)
+com limpeza no envio, limpeza lazy ao abrir o detalhe/servir a evidência na PWA e varredura
+diária automática no servidor da PWA (`evidence-cleanup-run` / `evidence-cleanup-serve` também
+estão disponíveis via CLI).
 
 A PWA de revisão roda na DGX e é publicada somente na tailnet em
 `https://dgx-spark.tail040a06.ts.net/` (Tailscale Serve → `127.0.0.1:8765`).

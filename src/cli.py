@@ -17,6 +17,7 @@ from .adapters.scheduler import LocalScheduler
 from .agents.agent_runtime import run_worker_loop
 from .agents.application_worker import ApplicationWorker
 from .agents.browser_apply import BrowserApplyAgent
+from .agents.browser_readiness import ensure_browser_ready, with_browser_gate
 from .agents.classification_worker import ClassificationWorker
 from .agents.submit_worker import SubmitWorker
 from .agents.company_suppression import CompanySuppressionAgent
@@ -33,6 +34,7 @@ from .dashboard import Dashboard
 from .execution.web.portal_credentials import PortalCredentialStore
 from .llm.factory import LLMRouter
 from .storage.database import Repository
+from .storage.evidence_store import cleanup_expired
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -509,25 +511,55 @@ def classification_serve() -> None:
     )
 
 
+def _await_logged_browser(settings) -> bool:
+    """Preflight: standby até o CDP do perfil logado responder."""
+    if ensure_browser_ready(settings):
+        return True
+    console.print(
+        "[yellow]Chrome logado indisponível no CDP; nenhuma vaga foi alterada.[/yellow]"
+    )
+    return False
+
+
+def _sweep_evidence(settings) -> dict[str, int]:
+    """Varredura global de evidências vencidas (chamada no startup do serve)."""
+    return cleanup_expired(
+        settings.resolve("data/evidence"),
+        retention_days=settings.application.evidence_retention_days,
+    )
+
+
 @app.command("application-prepare-run")
 def application_prepare_run(
     limit: int = typer.Option(0, "--limit", help="Máximo de vagas nesta rodada (0 = todas)."),
 ) -> None:
     """Prepara candidaturas de vagas QUALIFIED e para em PENDING_APPROVAL."""
-    worker = _application_worker(_orchestrator())
+    settings = _settings()
+    if not _await_logged_browser(settings):
+        raise typer.Exit(code=1)
+    worker = _application_worker(_orchestrator(settings=settings))
     counters = worker.run(limit or None)
     console.print(json.dumps(counters, ensure_ascii=False))
 
 
 @app.command("application-serve")
 def application_serve() -> None:
-    """Loop contínuo do agente de aplicação; nunca envia sem APPROVED humano."""
-    orchestrator = _orchestrator()
+    """Loop contínuo do agente de aplicação; nunca envia sem APPROVED humano.
+
+    Fica em standby até o Chrome logado responder no CDP; reaproveita o
+    perfil/cookies existentes, sem criar perfil, exportar cookies, maximizar ou
+    fechar a janela. Varre evidências vencidas uma vez no startup.
+    """
+    settings = _settings()
+    orchestrator = _orchestrator(settings=settings)
     worker = _application_worker(orchestrator)
+    limpeza = _sweep_evidence(settings)
+    if limpeza["files_removed"]:
+        console.print(f"[dim]Evidências vencidas removidas: {limpeza['files_removed']}[/dim]")
     run_worker_loop(
         orchestrator.repo,
         name="application",
-        callback=worker.run,
+        callback=with_browser_gate(settings, worker.run),
         interval_seconds=_worker_interval(),
     )
 
@@ -537,7 +569,10 @@ def apply_submit_run(
     limit: int = typer.Option(0, "--limit", help="Máximo de envios nesta rodada (0 = todos)."),
 ) -> None:
     """Consome checks aprovados na PWA e envia após revalidação determinística."""
-    worker = _submit_worker(_orchestrator())
+    settings = _settings()
+    if not _await_logged_browser(settings):
+        raise typer.Exit(code=1)
+    worker = _submit_worker(_orchestrator(settings=settings))
     counters = worker.run(limit or None)
     console.print(json.dumps(counters, ensure_ascii=False))
 
@@ -549,13 +584,49 @@ def apply_submit_serve(
     ),
 ) -> None:
     """Loop do envio autorizado pela PWA; usa a mesma trava da aplicação."""
-    orchestrator = _orchestrator()
+    settings = _settings()
+    orchestrator = _orchestrator(settings=settings)
     worker = _submit_worker(orchestrator)
     run_worker_loop(
         orchestrator.repo,
         name="application",
-        callback=worker.run,
+        callback=with_browser_gate(settings, worker.run),
         interval_seconds=max(1.0, interval),
+    )
+
+
+@app.command("evidence-cleanup-run")
+def evidence_cleanup_run(
+    days: int = typer.Option(
+        0, "--days", help="Sobrepõe evidence_retention_days apenas nesta rodada."
+    ),
+) -> None:
+    """Remove evidências fora da janela de retenção (padrão: config)."""
+    settings = _settings()
+    retencao = days or settings.application.evidence_retention_days
+    console.print(
+        json.dumps(
+            cleanup_expired(
+                settings.resolve("data/evidence"), retention_days=retencao
+            ),
+            ensure_ascii=False,
+        )
+    )
+
+
+@app.command("evidence-cleanup-serve")
+def evidence_cleanup_serve(
+    interval: float = typer.Option(
+        86400.0, "--interval", help="Intervalo da varredura diária em segundos."
+    ),
+) -> None:
+    """Varredura diária automática de evidências vencidas."""
+    settings = _settings()
+    run_worker_loop(
+        Repository(),
+        name="evidence_cleanup",
+        callback=lambda: _sweep_evidence(settings),
+        interval_seconds=max(60.0, interval),
     )
 
 

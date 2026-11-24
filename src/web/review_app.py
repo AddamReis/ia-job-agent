@@ -10,6 +10,8 @@ import json
 import mimetypes
 import os
 import re
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,10 +29,16 @@ from ..core.config import Settings
 from ..core.state import JobStatus
 from ..models.domain import JobOpportunity
 from ..storage.database import Repository
+from ..storage.evidence_store import (
+    EVIDENCE_SUFFIXES,
+    cleanup_expired,
+    file_is_expired,
+    is_expired,
+    retention_cutoff,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_CURRENCIES = {"USD", "EUR"}
-EVIDENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
 
 # Ordem fixa da interface. ``all`` é apenas filtro, nunca classificação de vaga.
@@ -77,6 +85,20 @@ def resolve_evidence_path(job_id: str, filename: str) -> Path | None:
     if alvo.stat().st_size > EVIDENCE_MAX_BYTES:
         return None
     return alvo
+
+
+def _fresh_evidence(
+    job_id: str, itens: list[dict[str, Any]], settings: Settings
+) -> list[dict[str, Any]]:
+    """Limpeza lazy: expira metadados/arquivos fora da janela de retenção."""
+    dias = settings.application.evidence_retention_days
+    cutoff = retention_cutoff(dias)
+    if dias <= 0:
+        return itens
+    cleanup_expired(
+        settings.resolve("data/evidence"), retention_days=dias, job_id=job_id
+    )
+    return [item for item in itens if not is_expired(item, cutoff=cutoff, retention_days=dias)]
 
 
 def _serialize(value: Any) -> Any:
@@ -266,6 +288,7 @@ def compute_checks(job: JobOpportunity) -> dict[str, dict[str, Any]]:
 
 def job_detail(job_id: str) -> dict[str, Any] | None:
     repo = _repo()
+    settings = _settings()
     job = repo.get_job(job_id)
     if job is None:
         return None
@@ -284,11 +307,12 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
         if str(item.get("path", "")) not in vistos:
             evidencias.append(_serialize(item))
             vistos.add(str(item.get("path", "")))
+    evidencias = _fresh_evidence(job.id, evidencias, settings)
     return {
         "job": _serialize(job),
         "bucket": _bucket(
             job,
-            _settings().qualification.min_score,
+            settings.qualification.min_score,
             approval_status=approval.status if approval else None,
             automation_error=automation_error,
         ),
@@ -440,6 +464,18 @@ class ReviewHandler(BaseHTTPRequestHandler):
             if alvo is None:
                 self._error(HTTPStatus.NOT_FOUND, "evidência não encontrada")
                 return
+            settings = _settings()
+            dias = settings.application.evidence_retention_days
+            if file_is_expired(
+                alvo, cutoff=retention_cutoff(dias), retention_days=dias
+            ):
+                cleanup_expired(
+                    settings.resolve("data/evidence"),
+                    retention_days=dias,
+                    job_id=job_id,
+                )
+                self._error(HTTPStatus.NOT_FOUND, "evidência expirada (retenção 30 dias)")
+                return
             tipo = mimetypes.guess_type(alvo.name)[0] or "application/octet-stream"
             self._send(HTTPStatus.OK, alvo.read_bytes(), tipo)
             return
@@ -529,9 +565,34 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "decision": decision})
 
 
+def daily_evidence_cleanup(
+    settings: Settings,
+    *,
+    interval_seconds: float = 86400.0,
+    sleep: Any = time.sleep,
+    stop: Any | None = None,
+) -> None:
+    """Varredura diária: remove evidências vencidas mesmos sem tráfego na PWA."""
+    while True:
+        cleanup_expired(
+            settings.resolve("data/evidence"),
+            retention_days=settings.application.evidence_retention_days,
+        )
+        if stop is not None and getattr(stop, "is_set", lambda: False)():
+            return
+        sleep(interval_seconds)
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     server = ThreadingHTTPServer((host, port), ReviewHandler)
     server.daemon_threads = True
+    settings = _settings()
+    threading.Thread(
+        target=daily_evidence_cleanup,
+        args=(settings,),
+        name="evidence-retention-daily",
+        daemon=True,
+    ).start()
     print(f"REVIEW_PWA=http://{host}:{port}", flush=True)
     try:
         server.serve_forever()
