@@ -1,5 +1,6 @@
 const BUCKETS = [
   ['approval', 'Aguardando Aprovação'],
+  ['pending', 'A Classificar'],
   ['submitted', 'Enviados'],
   ['rejected', 'Recusado'],
   ['errors', 'Erros'],

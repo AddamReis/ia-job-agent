@@ -34,6 +34,7 @@ ALLOWED_CURRENCIES = {"USD", "EUR"}
 # Ordem fixa da interface. ``all`` é apenas filtro, nunca classificação de vaga.
 BUCKETS: tuple[tuple[str, str], ...] = (
     ("approval", "Aguardando Aprovação"),
+    ("pending", "A Classificar"),
     ("submitted", "Enviados"),
     ("rejected", "Recusado"),
     ("errors", "Erros"),
@@ -86,10 +87,10 @@ def _bucket(
         job.qualification is not None and job.qualification.decision in {"SKIP", "REJECT"}
     ):
         return "rejected"
-    # Ainda sem classificação não é "aguardando aprovação": aparece só em Todas
-    # para não inflar a fila enquanto o classificador trabalha.
+    # Ainda sem classificação tem pasta própria: a soma das abas fecha com o
+    # total e a fila de aprovação não é inflada enquanto o classificador atua.
     if job.status in {JobStatus.DISCOVERED, JobStatus.ANALYZED}:
-        return "all"
+        return "pending"
     # Inclui QUALIFIED/PENDING_APPROVAL (dependem do check), WAITING_DEVICE e
     # REQUIRES_HUMAN_ACTION (dependem de ação humana) e APPLYING (em andamento).
     return "approval"

@@ -58,7 +58,7 @@ def test_query_review_jobs_text_order_and_pagination(tmp_path) -> None:
     assert newer["total"] == 6
     assert newer["pages"] == 2
     assert newer["counts"] == {
-        "approval": 6, "submitted": 0, "rejected": 0, "errors": 0, "all": 6
+        "approval": 6, "pending": 0, "submitted": 0, "rejected": 0, "errors": 0, "all": 6
     }
 
     page2 = repo.query_review_jobs(query="developer", sort="newer", page=2, limit=5)
@@ -74,7 +74,7 @@ def test_query_review_jobs_text_order_and_pagination(tmp_path) -> None:
     assert repo.query_review_jobs(query="%")["total"] == 0
 
 
-def test_query_review_jobs_keeps_unclassified_out_of_approval(tmp_path) -> None:
+def test_query_review_jobs_has_own_pending_classification_bucket(tmp_path) -> None:
     repo = Repository(tmp_path / "agent.db")
     _add_job(repo, "descoberta", JobStatus.DISCOVERED)
     _add_job(repo, "analisada", JobStatus.ANALYZED)
@@ -84,8 +84,11 @@ def test_query_review_jobs_keeps_unclassified_out_of_approval(tmp_path) -> None:
 
     assert [job.id for job in result["items"]] == ["pronta"]
     assert result["counts"] == {
-        "approval": 1, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
+        "approval": 1, "pending": 2, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
     }
+    assert [job.id for job in repo.query_review_jobs(bucket="pending")["items"]] == [
+        "analisada", "descoberta"
+    ]
     assert [job.id for job in repo.query_review_jobs(bucket="all")["items"]] == [
         "analisada", "descoberta", "pronta"
     ]
@@ -117,7 +120,7 @@ def test_query_review_jobs_buckets_search_in_analysis_and_error_precedence(tmp_p
     result = repo.query_review_jobs()
     assert [job.id for job in result["items"]] == ["analise", "wait"]
     assert result["counts"] == {
-        "approval": 2, "submitted": 0, "rejected": 2, "errors": 2, "all": 6
+        "approval": 2, "pending": 0, "submitted": 0, "rejected": 2, "errors": 2, "all": 6
     }
 
     assert [job.id for job in repo.query_review_jobs(bucket="errors")["items"]] == [

@@ -134,17 +134,17 @@ def test_bucket_order_counts_and_default(monkeypatch: pytest.MonkeyPatch) -> Non
 
     result = review.job_index()
 
-    assert result["order"] == ["approval", "submitted", "rejected", "errors", "all"]
+    assert result["order"] == ["approval", "pending", "submitted", "rejected", "errors", "all"]
     assert result["bucket"] == "approval"
     assert result["counts"] == {
-        "approval": 1, "submitted": 1, "rejected": 1, "errors": 1, "all": 4
+        "approval": 1, "pending": 0, "submitted": 1, "rejected": 1, "errors": 1, "all": 4
     }
     assert [item["id"] for item in result["items"]] == ["wait"]
     assert result["labels"]["approval"] == "Aguardando Aprovação"
     assert result["labels"]["all"] == "Todas"
 
 
-def test_unclassified_jobs_stay_only_in_all(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unclassified_jobs_have_own_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
     jobs = [
         _job("discovered", JobStatus.DISCOVERED),
         _job("analyzed", JobStatus.ANALYZED),
@@ -155,9 +155,10 @@ def test_unclassified_jobs_stay_only_in_all(monkeypatch: pytest.MonkeyPatch) -> 
     result = review.job_index()
 
     assert result["counts"] == {
-        "approval": 1, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
+        "approval": 1, "pending": 2, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
     }
     assert [item["id"] for item in result["items"]] == ["ready"]
+    assert result["order"] == ["approval", "pending", "submitted", "rejected", "errors", "all"]
 
 
 def test_failed_automation_wins_over_submitted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,7 +256,7 @@ def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v4'" in source
+    assert "const CACHE = 'review-pwa-v5'" in source
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at

@@ -557,7 +557,7 @@ class Repository:
         banco. Os contadores são ``COUNT`` separados com o mesmo filtro de
         texto, o que mantém os números das abas coerentes com a busca.
         """
-        buckets = ("approval", "submitted", "rejected", "errors", "all")
+        buckets = ("approval", "pending", "submitted", "rejected", "errors", "all")
         bucket = bucket if bucket in buckets else "approval"
         sort = "older" if sort == "older" else "newer"
         page = max(1, int(page))
@@ -620,6 +620,8 @@ class Repository:
                 return and_(~error_cond, sent_cond)
             if key == "rejected":
                 return and_(~error_cond, ~sent_cond, rejected_cond)
+            if key == "pending":
+                return and_(~error_cond, ~sent_cond, ~rejected_cond, pending_cond)
             if key == "approval":
                 return and_(~error_cond, ~sent_cond, ~rejected_cond, ~pending_cond)
             return None
