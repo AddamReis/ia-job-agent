@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -472,3 +473,40 @@ def test_internal_assessment_is_not_confused_with_application_data(
     assert "portal_assessment_detected" in nomes
     assert "portal_assessment_already_completed" in nomes
     assert "portal_assessment_pending" not in nomes
+
+
+def test_machine_pin_stays_only_in_local_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.execution.web.machine_pin import MachinePinStore
+
+    guardado: dict[tuple[str, str], str] = {}
+
+    class FakeKeyringModule:
+        @staticmethod
+        def set_password(service: str, username: str, value: str) -> None:
+            guardado[(service, username)] = value
+
+        @staticmethod
+        def get_password(service: str, username: str) -> str | None:
+            return guardado.get((service, username))
+
+        @staticmethod
+        def delete_password(service: str, username: str) -> None:
+            guardado.pop((service, username), None)
+
+    monkeypatch.setattr(
+        MachinePinStore, "_keyring", staticmethod(lambda: FakeKeyringModule)
+    )
+    store = MachinePinStore()
+
+    assert store.has() is False
+    store.set(" 78451200 ")
+    assert store.has() is True
+    assert store.get() == "78451200"
+    assert guardado == {(MachinePinStore.SERVICE, MachinePinStore.USERNAME): "78451200"}
+    assert "78451200" not in Path("config/config.yaml").read_text(encoding="utf-8")
+
+    store.delete()
+    assert store.has() is False
+

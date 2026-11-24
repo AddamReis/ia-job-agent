@@ -31,6 +31,7 @@ from .core.events import Event, EventBus
 from .core.geo import normalize_location
 from .core.state import JobStatus
 from .dashboard import Dashboard
+from .execution.web.machine_pin import MachinePinStore
 from .execution.web.portal_credentials import PortalCredentialStore
 from .llm.factory import LLMRouter
 from .storage.database import Repository
@@ -273,6 +274,32 @@ def portal_auth(
     for item in dominios:
         tabela.add_row(item, "cadastradas" if store.has(item) else "ausentes")
     console.print(tabela)
+
+
+@app.command("machine-pin")
+def machine_pin(
+    set_pin: bool = typer.Option(False, "--set", help="Cadastrar/substituir o PIN da máquina"),
+    delete_pin: bool = typer.Option(False, "--delete", help="Remover o PIN salvo"),
+) -> None:
+    """Gerencia o PIN de desbloqueio do Windows no cofre local.
+
+    O valor nunca é exibido, enviado à DGX ou gravado em log/config/banco.
+    """
+    store = MachinePinStore()
+    if set_pin:
+        pin = typer.prompt("PIN da máquina", hide_input=True)
+        store.set(pin)
+        console.print("[green]PIN salvo no cofre local do Windows.[/green]")
+        return
+    if delete_pin:
+        store.delete()
+        console.print("[yellow]PIN removido do cofre local.[/yellow]")
+        return
+    console.print(
+        "PIN da máquina: "
+        + ("cadastrado" if store.has() else "ausente")
+        + " (valor nunca exibido, enviado à DGX ou gravado em log)"
+    )
 
 
 @app.command("device-pending")

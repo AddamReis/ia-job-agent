@@ -903,8 +903,9 @@ class BrowserApplyAgent:
         if (!norm(texto).includes(alvo) &&
             !norm(el.getAttribute('aria-label')).includes(alvo)) continue;
         if (el.checked || el.getAttribute('aria-checked') === 'true') return true;
-        const alvoCliquel = el.closest('label') || el.parentElement || el;
-        alvoCliquel.click();
+        // MUI usa um <input> escondido dentro de um <span>: clicar no texto do
+        // termo não alterna o valor. O click no input dispara o onChange do React.
+        el.click();
         return true;
       }
       return false;
@@ -939,27 +940,33 @@ class BrowserApplyAgent:
             texto = str(item.get("text") or item.get("aria") or "")
             clicou = False
             rotulos = [texto] + list(getattr(cfg, "terms_checkbox_labels", []) or [])
+            # Primeiro o input real: em MUI o texto ao lado não é um <label>.
             for rotulo in rotulos:
                 if not rotulo:
                     continue
                 try:
-                    locator = frame.get_by_text(rotulo, exact=False)
-                    for indice in range(min(int(locator.count() or 0), 4)):
-                        alvo = locator.nth(indice)
-                        if hasattr(alvo, "is_visible") and not alvo.is_visible():
-                            continue
-                        alvo.click()
-                        clicou = True
-                        break
+                    clicou = bool(frame.evaluate(self._JS_CHECK_TERMS, rotulo))
                 except Exception:
-                    continue
+                    clicou = False
                 if clicou:
                     break
             if not clicou:
-                try:
-                    clicou = bool(frame.evaluate(self._JS_CHECK_TERMS, texto))
-                except Exception:
-                    clicou = False
+                for rotulo in rotulos:
+                    if not rotulo:
+                        continue
+                    try:
+                        locator = frame.get_by_text(rotulo, exact=False)
+                        for indice in range(min(int(locator.count() or 0), 4)):
+                            alvo = locator.nth(indice)
+                            if hasattr(alvo, "is_visible") and not alvo.is_visible():
+                                continue
+                            alvo.click()
+                            clicou = True
+                            break
+                    except Exception:
+                        continue
+                    if clicou:
+                        break
             if not clicou:
                 raise HumanActionRequired(
                     "termos", "não foi possível marcar o aceite de termos exibido"
@@ -1183,6 +1190,11 @@ class BrowserApplyAgent:
         except Exception:
             texto = ""
         baixo = texto.lower()
+        log_event(
+            "portal_google_screen",
+            domain=dominio,
+            trecho=" ".join(texto[:240].split())[:240],
+        )
         if any(
             sinal in baixo
             for sinal in (
@@ -1209,6 +1221,7 @@ class BrowserApplyAgent:
                         "login", "Google pediu senha; agente não digita credencial"
                     )
 
+        clicou_continue = ""
         for rotulo in cfg.oauth_continue_labels:
             botao = google.get_by_text(rotulo, exact=False)
             if botao.count() == 0:
@@ -1216,10 +1229,17 @@ class BrowserApplyAgent:
             if botao.count():
                 try:
                     botao.first.click()
+                    clicou_continue = rotulo
                 except Exception:
                     continue
                 google.wait_for_timeout(4000)
                 break
+        log_event(
+            "portal_google_continue",
+            domain=dominio,
+            rotulo=clicou_continue[:40],
+            urls=[str(p.url or "")[:160] for p in contexto.pages][:8],
+        )
 
         destino = None
         for _ in range(8):
@@ -1238,6 +1258,11 @@ class BrowserApplyAgent:
                 except Exception:
                     pass
         if destino is None:
+            log_event(
+                "portal_google_oauth_inconclusivo",
+                domain=dominio,
+                urls=[str(p.url or "")[:160] for p in contexto.pages][:8],
+            )
             raise HumanActionRequired(
                 "login", f"OAuth Google de {dominio} não retornou ao portal autenticado"
             )

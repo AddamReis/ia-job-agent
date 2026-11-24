@@ -260,7 +260,24 @@ python -m src.cli portal-auth --set --domain portal.exemplo.com --username SEU_U
 ```
 
 A senha é pedida com eco desligado e nunca vai para config, banco ou log. Se o portal ou o Google
-pedirem CAPTCHA/MFA/verificação/senha, o agente para sem interagir. O `APPROVED` humano antes de
+pedirem CAPTCHA/MFA/verificação/senha, o agente para sem interagir.
+
+O **PIN de desbloqueio da máquina Windows** fica apenas no Windows Credential Manager, no mesmo
+cofre usado pelas credenciais de portal:
+
+```powershell
+python -m src.cli machine-pin --set     # pede o PIN com eco desligado
+python -m src.cli machine-pin           # mostra só "cadastrado"/"ausente"
+python -m src.cli machine-pin --delete
+```
+
+Esse valor **nunca** é enviado à DGX, gravado em `config.yaml`, banco, evidência ou log. A DGX não
+precisa dele: o worker remoto apenas conversa com o Chrome logado em `127.0.0.1:9222` pelo túnel
+SSH reverso. Enquanto a sessão Windows estiver ativa (mesmo bloqueada), o Chrome e o túnel seguem
+disponíveis e a automação roda normalmente. Se a máquina for suspensa/desligada, o túnel cai e é
+preciso religar a máquina localmente — o PIN não é uma forma de burlar MFA ou CAPTCHA de portal.
+
+O `APPROVED` humano antes de
 cada Submit continua obrigatório. Landing externa sem formulário é percorrida no máximo quatro
 CTAs, sempre relendo a tela; a mesma etiqueta em telas diferentes (ex.: RecruitCRM) é permitida,
 mas atalhos sociais, banners de cookie e navegação são vetados. O diálogo pós-envio com testes
