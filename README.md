@@ -108,7 +108,8 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   mas não é mais pré-requisito. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
 - Formulários preenchem **no máximo as 3 experiências mais recentes** (`profile.max_experiences_in_forms`).
   O prompt do LLM recebe só essas três; etapas de “Work experience” não são reescritas e um cartão
-  extra vazio é removido, sem criar uma quarta experiência.
+  extra vazio é removido via **“Excluir experiência” → “Remover”**, sem criar uma quarta
+  experiência; o botão “Avaliar” leva à revisão final antes do envio.
 
 Operação local: as rotinas de Apply fazem **preflight do CDP** e ficam em standby (heartbeat no
 log) até o Chrome já logado responder em `http://127.0.0.1:9222/json/version`. Elas reaproveitam

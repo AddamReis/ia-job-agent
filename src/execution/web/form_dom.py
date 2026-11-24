@@ -114,7 +114,7 @@ _BLOCK_MARKS = ("captcha", "verificação", "verificacao", "unusual activity", "
 
 _NEXT_LABELS = (
     "Next", "Next step", "Continue", "Continuar", "Próximo", "Proximo",
-    "Avançar", "Avancar", "Seguinte",
+    "Avançar", "Avancar", "Seguinte", "Avaliar", "Revisar", "Review",
 )
 # Rótulos de avanço nunca podem confundir com Submit/Review final.
 _SUBMIT_WORDS = (
@@ -205,6 +205,12 @@ _EXPERIENCE_REMOVE_LABELS = (
     "Delete experience",
     "Eliminar experiencia",
 )
+# O LinkedIn abre um dialogo de confirmacao depois de "Excluir experiencia".
+# Sem clicar em "Remover" o cartao extra continua no formulario e o Avancar
+# volta a abrir o cartao com campos obrigatorios vazios.
+_EXPERIENCE_CONFIRM_LABELS = (
+    "Remover", "Excluir", "Delete", "Remove", "Confirmar", "Confirm",
+)
 _EXPERIENCE_CARD_JS = r"""
 (btn) => {
   const root = btn.closest('li, article, section, [role="group"]')
@@ -234,6 +240,29 @@ def _normalize_title(value: object) -> str:
     return re.sub(r"\W+", " ", str(value or "").lower()).strip()
 
 
+def _confirm_experience_removal(page: Any) -> bool:
+    """Confirma o dialogo aberto por 'Excluir experiencia'."""
+    wait = getattr(page, "wait_for_timeout", None)
+    if callable(wait):
+        wait(300)
+    for label in _EXPERIENCE_CONFIRM_LABELS:
+        locator = page.get_by_role(
+            "button", name=re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
+        )
+        try:
+            if locator.count() == 0:
+                continue
+            target = locator.first
+            if hasattr(target, "is_visible") and not target.is_visible():
+                continue
+            target.click()
+            log_event("browser_apply_extra_experience_confirmed", label=label)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def remove_extra_experience_entry(page: Any, profile_titles: list[str]) -> bool:
     """Remove um cartão de experiência vazio/extra sem tocar nos reais.
 
@@ -261,9 +290,11 @@ def remove_extra_experience_entry(page: Any, profile_titles: list[str]) -> bool:
                 ):
                     continue
                 button.click()
+                confirmed = _confirm_experience_removal(page)
                 log_event(
                     "browser_apply_extra_experience_removed",
                     title=str(info.get("title", ""))[:80],
+                    confirmed=confirmed,
                 )
                 return True
             except Exception:
