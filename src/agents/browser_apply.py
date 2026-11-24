@@ -37,6 +37,7 @@ from ..execution.web.form_dom import (
     remove_extra_experience_entry,
     snapshot_form,
     submission_state,
+    visible_buttons,
 )
 from ..execution.web.linkedin_logged import LinkedInLoggedBrowser
 from ..execution.web.portal_credentials import PortalCredentialStore
@@ -1148,6 +1149,11 @@ class BrowserApplyAgent:
                 raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
             if state != "submitted":
                 if not click_submit(page):
+                    log_event(
+                        "browser_apply_submit_not_found",
+                        buttons=visible_buttons(page),
+                        step=len(steps),
+                    )
                     raise ValidationError("botão de envio não encontrado no formulário")
                 page.wait_for_timeout(2500)
                 state = submission_state(page)

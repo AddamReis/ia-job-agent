@@ -101,7 +101,9 @@ _SNAPSHOT_JS = r"""
 """
 
 _SUBMIT_LABELS = (
-    "Submit application", "Submit", "Enviar candidatura", "Enviar", "Aplicar",
+    "Submit application", "Submit", "Send application", "Enviar candidatura",
+    "Enviar aplicação", "Enviar aplicacao", "Enviar inscrição", "Enviar inscricao",
+    "Enviar agora", "Enviar", "Aplicar", "Concluir", "Finalizar",
     "Review application", "Revisar candidatura",
 )
 _CONFIRM_MARKS = (
@@ -165,8 +167,29 @@ _RESUME_SELECT_JS = r"""
 """
 
 
+_VISIBLE_BUTTONS_JS = r"""
+() => [...document.querySelectorAll('button')]
+  .filter(b => {
+    const rect = b.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  })
+  .map(b => ({
+    text: (b.innerText || '').trim().slice(0, 120),
+    aria: b.getAttribute('aria-label') || '',
+    disabled: Boolean(b.disabled),
+  }))
+  .filter(b => b.text || b.aria)
+  .slice(0, 40)
+"""
+
+
 def snapshot_form(page: Any) -> dict[str, Any]:
     return page.evaluate(_SNAPSHOT_JS) or {}
+
+
+def visible_buttons(page: Any) -> list[dict[str, Any]]:
+    """Botões visíveis do step atual, para diagnóstico sem expor dados."""
+    return page.evaluate(_VISIBLE_BUTTONS_JS) or []
 
 
 _EXPERIENCE_STEP_MARKS = (
