@@ -201,6 +201,8 @@ class BrowserApplyAgent:
         self.portal_credentials = PortalCredentialStore()
         self.patterns = SitePatternStore(settings.resolve("data/site_patterns.json"))
         self._pending: dict[str, PreparedForm] = {}
+        # Ações de UI observadas nesta execução só viram memória após o envio.
+        self._pending_ui_actions: list[dict[str, Any]] = []
 
     @staticmethod
     def _evidence_dir(job: JobOpportunity) -> Path:
@@ -264,7 +266,13 @@ class BrowserApplyAgent:
                 # extra vazio e seguir para a próxima etapa.
                 removals = 0
                 while (
-                    remove_extra_experience_entry(page, titulos_conhecidos)
+                    remove_extra_experience_entry(
+                        page,
+                        titulos_conhecidos,
+                        decider=self._decide_ui_action,
+                        observer=self._queue_ui_action,
+                        url=snapshot.get("url", ""),
+                    )
                     and removals < 3
                 ):
                     page.wait_for_timeout(500)
@@ -849,6 +857,65 @@ class BrowserApplyAgent:
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")
 
+    def _decide_ui_action(
+        self, intent: str, dialog: dict[str, Any], trigger: str
+    ) -> Any:
+        """Usa memória local + LLM da DGX para decidir o próximo clique."""
+        url = str(dialog.get("url", "") or "")
+        learned = self.patterns.suggest_action(url, intent, trigger)
+        buttons = [
+            str(item.get("text") or item.get("aria") or "")
+            for item in dialog.get("buttons", []) or []
+        ]
+        buttons = [label for label in buttons if label]
+        memory_context = ""
+        if learned:
+            memory_context = (
+                f"ação={learned.get('action','')}; "
+                f"êxitos={learned.get('successes', 0)}; "
+                f"falhas={learned.get('failures', 0)}; "
+                f"motivo={learned.get('reason','')}"
+            )
+        decision = self.resolver.interpret_action(
+            intent,
+            str(dialog.get("text", "") or ""),
+            buttons,
+            memory_context,
+        )
+        if learned and learned.get("action") == getattr(decision, "action", ""):
+            decision.source = "learned"
+        log_event(
+            "browser_apply_ui_action_decided",
+            intent=intent,
+            source=str(getattr(decision, "source", "") or "")[:40],
+            needs_human=bool(getattr(decision, "needs_human", False)),
+        )
+        return decision
+
+    def _queue_ui_action(self, info: dict[str, Any]) -> None:
+        self._pending_ui_actions.append(dict(info))
+
+    def _flush_ui_actions(self, *, success: bool) -> None:
+        if not self._pending_ui_actions:
+            return
+        actions, self._pending_ui_actions = self._pending_ui_actions, []
+        for info in actions:
+            self.patterns.record_action(
+                str(info.get("url", "")),
+                str(info.get("intent", "")),
+                str(info.get("trigger", "")),
+                str(info.get("action", "")),
+                str(info.get("dialog_signature", "")),
+                success=success,
+                source=str(info.get("source", "")),
+                reason=str(info.get("reason", "")),
+            )
+        log_event(
+            "browser_apply_ui_actions_learned",
+            actions=len(actions),
+            success=success,
+        )
+
     def _cv_path(self) -> str:
         """Caminho real do CV no runtime (override da DGX tem precedência)."""
         return str(
@@ -1236,6 +1303,7 @@ class BrowserApplyAgent:
                     decision.source,
                     success=True,
                 )
+            self._flush_ui_actions(success=True)
             self._pending.pop(job.id, None)
             if self.memory is not None:
                 self.memory.record_outcome(job, "SUBMITTED")
@@ -1244,6 +1312,7 @@ class BrowserApplyAgent:
                 self.bus.emit("application.submitted", company=job.company, title=job.title)
             return application
         except Exception as exc:
+            self._flush_ui_actions(success=False)
             if self.memory is not None:
                 self.memory.record_outcome(job, "FAILED", str(exc))
             raise

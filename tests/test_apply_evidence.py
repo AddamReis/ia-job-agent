@@ -87,6 +87,7 @@ def _walk_agent(tmp_path: Path) -> BrowserApplyAgent:
     agent.patterns = SitePatternStore(tmp_path / "patterns.json")
     agent.resolver = FakeResolver()
     agent.profile = CandidateProfile()
+    agent._pending_ui_actions = []
     return agent
 
 
@@ -305,7 +306,7 @@ def test_walk_steps_skips_experience_step_and_removes_extra(
     )
     monkeypatch.setattr("src.agents.browser_apply.click_next", lambda page, label: True)
     monkeypatch.setattr("src.agents.browser_apply.submission_state", lambda page: "unknown")
-    def fake_remove(_page, titles):
+    def fake_remove(_page, titles, **_kwargs):
         if next(removal_results):
             removals.append(titles)
             return True

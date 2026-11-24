@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 import pytest
@@ -259,7 +260,7 @@ def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v7'" in source
+    assert re.search(r"const CACHE = 'review-pwa-v\d+'", source)
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at

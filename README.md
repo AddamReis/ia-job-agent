@@ -98,8 +98,12 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   ao agente único.
 - **Hermes** (aprendizado) corresponde ao `SitePatternStore` + `ApplyRoute`: o agente
   reutiliza padrões de formulário já aprendidos por domínio e aprende novos após envios
-  bem-sucedidos. **Zaply** (envio simplificado) corresponde à rota `EASY_APPLY` do mesmo
-  `BrowserApplyAgent`. Não há integração externa com produtos de mesmo nome neste repositório.
+  bem-sucedidos. Isso agora inclui **decisões de UI**: o LLM da DGX interpreta o estado real
+  do diálogo e escolhe o botão seguro; a escolha que leva ao envio é persistida por domínio,
+  intenção e gatilho e reutilizada na próxima rodada. A decisão nunca inventa rótulos e para
+  se a plataforma pedir verificação. **Zaply** (envio simplificado) corresponde à rota
+  `EASY_APPLY` do mesmo `BrowserApplyAgent`. Não há integração externa com produtos de mesmo
+  nome neste repositório.
 - O botão **“Quero me candidatar — automatizar”** da PWA é a própria autorização: aparece
   para toda vaga `QUALIFIED`, sem exigir formulário preparado antes. O clique grava a decisão,
   publica `review.approved` e o `apply-submit-serve` abre o Chrome logado, preenche, captura
@@ -108,7 +112,9 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   mas não é mais pré-requisito. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
 - Formulários preenchem **no máximo as 3 experiências mais recentes** (`profile.max_experiences_in_forms`).
   O prompt do LLM recebe só essas três; etapas de “Work experience” não são reescritas e um cartão
-  extra vazio é removido via **“Excluir experiência” → “Remover”**, sem criar uma quarta
+  extra vazio é removido interpretando o diálogo aberto por **“Excluir experiência”**: o agente
+  consulta a memória local, pede ao LLM da DGX o botão seguro quando não há memória e aprende
+  a decisão após o envio bem-sucedido. Na prática ele chega a **“Remover”**, sem criar uma quarta
   experiência; o botão “Avaliar” leva à revisão final antes do envio.
 
 Operação local: as rotinas de Apply fazem **preflight do CDP** e ficam em standby (heartbeat no

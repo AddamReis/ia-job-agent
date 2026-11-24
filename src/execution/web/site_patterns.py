@@ -66,3 +66,54 @@ class SitePatternStore:
             current["failures"] = int(current.get("failures", 0)) + 1
         fields[signature] = current
         self._save(data)
+
+    @staticmethod
+    def _action_key(intent: str, trigger: str) -> str:
+        return f"{str(intent or '').strip().lower()}::{str(trigger or '').strip().lower()}"
+
+    def suggest_action(
+        self, url: str, intent: str, trigger: str = ""
+    ) -> dict[str, Any] | None:
+        """Devolve uma ação já aprendida para este domínio/intenção/gatilho."""
+        domain = domain_of(url)
+        if not domain or not intent:
+            return None
+        actions = self.load().get("actions", {})
+        entry = actions.get(domain, {}).get(self._action_key(intent, trigger))
+        return entry or None
+
+    def record_action(
+        self,
+        url: str,
+        intent: str,
+        trigger: str,
+        action: str,
+        dialog_signature: str = "",
+        *,
+        success: bool = True,
+        source: str = "",
+        reason: str = "",
+    ) -> None:
+        """Persiste uma decisão de UI que levou (ou não) a um envio concluído.
+
+        Nunca guarda dados pessoais: apenas rótulos de botão, assinatura do
+        diálogo e a origem da decisão (memória, LLM ou regra local).
+        """
+        domain = domain_of(url)
+        if not domain or not intent or not action or action.lower() == "none":
+            return
+        data = self.load()
+        actions = data.setdefault("actions", {})
+        intent_map = actions.setdefault(domain, {})
+        key = self._action_key(intent, trigger)
+        current = intent_map.get(key, {})
+        if success:
+            current["successes"] = int(current.get("successes", 0)) + 1
+            current["action"] = action
+            current["dialog_signature"] = dialog_signature
+            current["source"] = source
+            current["reason"] = str(reason)[:240]
+        else:
+            current["failures"] = int(current.get("failures", 0)) + 1
+        intent_map[key] = current
+        self._save(data)

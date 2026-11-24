@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ...core.errors import ValidationError
+from ...core.errors import HumanActionRequired, ValidationError
 from ...core.logging import log_event
 
 _SNAPSHOT_JS = r"""
@@ -206,11 +206,36 @@ _EXPERIENCE_REMOVE_LABELS = (
     "Eliminar experiencia",
 )
 # O LinkedIn abre um dialogo de confirmacao depois de "Excluir experiencia".
-# Sem clicar em "Remover" o cartao extra continua no formulario e o Avancar
-# volta a abrir o cartao com campos obrigatorios vazios.
+# Esses rotulos sao apenas o fallback local: a decisao normal e aprendida ou
+# interpretada pelo agente a partir do estado real do dialogo.
 _EXPERIENCE_CONFIRM_LABELS = (
-    "Remover", "Excluir", "Delete", "Remove", "Confirmar", "Confirm",
+    "Remover", "Delete", "Remove", "Confirmar", "Confirm", "Excluir",
 )
+_DIALOG_STATE_JS = r"""
+() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const dialogs = [...document.querySelectorAll(
+    '[role="dialog"],[role="alertdialog"],[aria-modal="true"]'
+  )].filter(visible);
+  const root = dialogs[dialogs.length - 1] || document.body;
+  const buttons = [...root.querySelectorAll('button')]
+    .filter(visible)
+    .map((b) => ({
+      text: (b.innerText || '').trim().slice(0, 120),
+      aria: (b.getAttribute('aria-label') || '').trim().slice(0, 120),
+    }))
+    .filter((b) => b.text || b.aria)
+    .slice(0, 40);
+  return {
+    url: location.href,
+    text: (root.innerText || '').trim().slice(0, 1600),
+    buttons,
+  };
+}
+"""
 _EXPERIENCE_CARD_JS = r"""
 (btn) => {
   const root = btn.closest('li, article, section, [role="group"]')
@@ -240,30 +265,128 @@ def _normalize_title(value: object) -> str:
     return re.sub(r"\W+", " ", str(value or "").lower()).strip()
 
 
-def _confirm_experience_removal(page: Any) -> bool:
-    """Confirma o dialogo aberto por 'Excluir experiencia'."""
-    wait = getattr(page, "wait_for_timeout", None)
-    if callable(wait):
-        wait(300)
-    for label in _EXPERIENCE_CONFIRM_LABELS:
-        locator = page.get_by_role(
-            "button", name=re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
-        )
+def _decision_field(decision: Any, name: str, default: Any = None) -> Any:
+    if decision is None:
+        return default
+    if isinstance(decision, dict):
+        return decision.get(name, default)
+    return getattr(decision, name, default)
+
+
+def _dialog_labels(dialog: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for button in dialog.get("buttons", []) or []:
+        for key in ("text", "aria"):
+            value = str(button.get(key, "") or "").strip()
+            if value and value not in labels:
+                labels.append(value)
+    return labels
+
+
+def _click_visible_button(page: Any, label: str) -> bool:
+    pattern = re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
+    locators = (
+        lambda: page.get_by_role("button", name=pattern),
+        lambda: page.locator(f'button:has-text("{label}")'),
+    )
+    for factory in locators:
         try:
-            if locator.count() == 0:
-                continue
-            target = locator.first
-            if hasattr(target, "is_visible") and not target.is_visible():
-                continue
-            target.click()
-            log_event("browser_apply_extra_experience_confirmed", label=label)
-            return True
+            locator = factory()
+            for indice in range(locator.count()):
+                target = locator.nth(indice)
+                if hasattr(target, "is_visible") and not target.is_visible():
+                    continue
+                target.click()
+                return True
         except Exception:
             continue
     return False
 
 
-def remove_extra_experience_entry(page: Any, profile_titles: list[str]) -> bool:
+def _confirm_experience_removal(
+    page: Any,
+    *,
+    decider: Any = None,
+    observer: Any = None,
+    url: str = "",
+) -> bool:
+    """Interpreta o dialogo aberto por 'Excluir experiencia' e confirma.
+
+    A decisão vem da memória local/LLM via ``decider``. O fallback de rótulos
+    só é usado quando não há decider (ferramentas e testes antigos).
+    """
+    wait = getattr(page, "wait_for_timeout", None)
+    if callable(wait):
+        wait(300)
+
+    evaluate = getattr(page, "evaluate", None)
+    dialog = evaluate(_DIALOG_STATE_JS) if callable(evaluate) else None
+    if not isinstance(dialog, dict):
+        dialog = {"url": url, "text": "", "buttons": []}
+    dialog.setdefault("url", url)
+    labels = _dialog_labels(dialog)
+    if not labels:
+        return False
+
+    intent = "confirm_remove_extra_experience"
+    trigger = "Excluir experiência"
+    dialog_signature = _normalize_title(" ".join(labels) + " " + str(dialog.get("text", "")))[:300]
+
+    decision = decider(intent, dialog, trigger) if callable(decider) else None
+    if decision is None:
+        for label in _EXPERIENCE_CONFIRM_LABELS:
+            if label in labels and label.lower() != trigger.lower():
+                decision = {
+                    "action": label,
+                    "source": "local_fallback",
+                    "reason": "rótulo de confirmação conhecido",
+                    "needs_human": False,
+                }
+                break
+
+    if decision is None or _decision_field(decision, "needs_human", False):
+        reason = str(_decision_field(decision, "reason", ""))[:120]
+        log_event("browser_apply_ui_action_needs_human", intent=intent, reason=reason)
+        raise HumanActionRequired("confirmacao_de_exclusao", reason)
+
+    action = str(_decision_field(decision, "action", "") or "").strip()
+    if action.lower() == "none" or action not in labels:
+        log_event("browser_apply_ui_action_rejected", intent=intent, action=action[:80])
+        raise ValidationError("botão de confirmação da exclusão não identificado")
+    if not _click_visible_button(page, action):
+        raise ValidationError("falha ao confirmar a exclusão da experiência extra")
+
+    source = str(_decision_field(decision, "source", "llm") or "llm")[:40]
+    reason = str(_decision_field(decision, "reason", "") or "")[:240]
+    log_event(
+        "browser_apply_extra_experience_confirmed",
+        label=action,
+        source=source,
+        reason=reason,
+    )
+    if callable(observer):
+        observer(
+            {
+                "url": str(dialog.get("url", "") or url),
+                "intent": intent,
+                "trigger": trigger,
+                "action": action,
+                "dialog_signature": dialog_signature,
+                "source": source,
+                "reason": reason,
+            }
+        )
+    return True
+
+
+def remove_extra_experience_entry(
+    page: Any,
+    profile_titles: list[str],
+    *,
+    decider: Any = None,
+    observer: Any = None,
+    url: str = "",
+) -> bool:
     """Remove um cartão de experiência vazio/extra sem tocar nos reais.
 
     Só clica em "Excluir experiência" quando o cartão não contém nenhum título
@@ -290,13 +413,17 @@ def remove_extra_experience_entry(page: Any, profile_titles: list[str]) -> bool:
                 ):
                     continue
                 button.click()
-                confirmed = _confirm_experience_removal(page)
+                confirmed = _confirm_experience_removal(
+                    page, decider=decider, observer=observer, url=url
+                )
                 log_event(
                     "browser_apply_extra_experience_removed",
                     title=str(info.get("title", ""))[:80],
                     confirmed=confirmed,
                 )
-                return True
+                return confirmed
+            except (HumanActionRequired, ValidationError):
+                raise
             except Exception:
                 continue
     return False

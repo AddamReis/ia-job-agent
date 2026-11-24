@@ -14,11 +14,12 @@ from src.agents.browser_apply import (
 from src.core.config import Settings
 from src.core.errors import HumanActionRequired, ValidationError
 from src.core.state import JobStatus
+from src.execution.forms.answers import AnswerResolver
 from src.execution.forms.field import FormField
 from src.execution.web.form_dom import ensure_resume_uploaded, fill_field
 from src.execution.web.site_patterns import SitePatternStore
 from src.models.domain import ApprovalRequest, CandidateProfile, JobAnalysis, JobOpportunity
-from src.models.schemas import AnswerDecision
+from src.models.schemas import AnswerDecision, UiActionDecision
 
 
 class FakeResolver:
@@ -258,6 +259,74 @@ def test_site_pattern_store_keeps_only_selector_and_source(tmp_path) -> None:
     assert learned["selector"] == "#candidate-email"
     assert learned["successes"] == 1
     assert "pessoal" not in store.path.read_text(encoding="utf-8").lower()
+
+
+def test_site_pattern_store_learns_ui_actions(tmp_path) -> None:
+    store = SitePatternStore(tmp_path / "site_patterns.json")
+    url = "https://www.linkedin.com/jobs/view/4492884477/"
+    store.record_action(
+        url,
+        "confirm_remove_extra_experience",
+        "Excluir experiência",
+        "Remover",
+        "remover cancelar tem certeza que deseja excluir",
+        success=True,
+        source="learned",
+        reason="confirmou a exclusão",
+    )
+    store.record_action(
+        url,
+        "confirm_remove_extra_experience",
+        "Excluir experiência",
+        "Remover",
+        success=False,
+    )
+    learned = store.suggest_action(
+        url, "confirm_remove_extra_experience", "Excluir experiência"
+    )
+    assert learned is not None
+    assert learned["action"] == "Remover"
+    assert learned["successes"] == 1
+    assert learned["failures"] == 1
+    assert "Suporte TI" not in store.path.read_text(encoding="utf-8")
+
+
+class FakeLLMRouter:
+    def __init__(self, decision: UiActionDecision) -> None:
+        self.decision = decision
+        self.calls = 0
+
+    def structured(self, messages, schema):
+        self.calls += 1
+        assert schema is UiActionDecision
+        return self.decision
+
+
+def test_ui_action_interpretation_validates_visible_buttons(tmp_path) -> None:
+    settings = Settings(root=tmp_path)
+    router = FakeLLMRouter(
+        UiActionDecision(
+            action="Remover", source="dgx", reason="confirma exclusão da experiência extra"
+        )
+    )
+    resolver = AnswerResolver(CandidateProfile(), router, settings)
+
+    decision = resolver.interpret_action(
+        "confirm_remove_extra_experience",
+        "Tem certeza de que deseja excluir?",
+        ["Remover", "Cancelar"],
+    )
+
+    assert router.calls == 1
+    assert decision.action == "Remover"
+    assert not decision.needs_human
+
+    router = FakeLLMRouter(UiActionDecision(action="Enviar candidatura"))
+    resolver = AnswerResolver(CandidateProfile(), router, settings)
+    invalid = resolver.interpret_action(
+        "confirm_remove_extra_experience", "Tem certeza?", ["Remover", "Cancelar"]
+    )
+    assert invalid.needs_human is True
 
 
 def test_ensure_resume_uploaded_rejects_missing_file(tmp_path) -> None:

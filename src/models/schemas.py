@@ -107,3 +107,12 @@ class AnswerDecision(BaseModel):
     source: str = ""
     needs_human: bool = False
     reason: str = ""
+
+
+class UiActionDecision(BaseModel):
+    """Próxima ação segura em um diálogo/formulário, escolhida pelo agente."""
+
+    action: str = ""
+    source: str = ""
+    needs_human: bool = False
+    reason: str = ""

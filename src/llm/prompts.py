@@ -1,6 +1,8 @@
 """Prompts versionados para extração e decisões auxiliares."""
 from __future__ import annotations
 
+import json
+
 EXTRACTION_SYSTEM = """Voce e um extrator de fatos de descricoes de vagas.
 
 Regras obrigatorias:
@@ -261,5 +263,46 @@ def answer_messages(
         )
     return [
         {"role": "system", "content": ANSWER_SYSTEM},
+        {"role": "user", "content": content},
+    ]
+
+
+UI_ACTION_SYSTEM = """Voce interpreta o estado atual de um formulario de candidatura
+e escolhe a proxima acao segura entre os botoes visiveis fornecidos.
+
+Regras obrigatorias:
+- Escolha EXATAMENTE um dos rotulos de botao fornecidos, copiado sem alteracao.
+  Se nenhum for seguro ou necessario, use action="none".
+- Nunca escolha botoes de CAPTCHA, verificacao, MFA, senha, pagamento, termos
+  legais, privacidade, autorizacao de trabalho, visto ou contrato. Nesses casos,
+  marque needs_human=true e action="none".
+- Use a intencao informada para entender o dialogo. Exemplo: ao remover uma
+  experiencia extra do perfil, um dialogo pode pedir confirmacao; nesse caso o
+  botao de confirmar a exclusao e seguro, desde que nao seja um botao sensivel.
+- Se houver memoria de uma decisao anterior bem-sucedida, use-a como contexto,
+  mas confirme que o rotulo ainda existe entre os botoes visiveis.
+- Em duvida, marque needs_human=true e nao clique em nada.
+- Responda SEMPRE em JSON valido, sem texto fora do JSON.
+"""
+
+
+def ui_action_messages(
+    intent: str,
+    dialog_text: str,
+    buttons: list[str],
+    memory_context: str = "",
+) -> list[dict[str, str]]:
+    content = (
+        f"Intencao da automacao: {intent}\n\n"
+        f"Texto visivel do dialogo/etapa (resumo):\n{dialog_text[:2000]}\n\n"
+        f"Botoes visiveis (rotulos exatos):\n{json.dumps(buttons, ensure_ascii=False)}\n"
+    )
+    if memory_context:
+        content += (
+            "\n\nMEMORIA LOCAL DE ACOES BEM-SUCEDIDAS (contexto auditavel; "
+            "confirme o rotulo nos botoes visiveis):\n" + memory_context[:1200]
+        )
+    return [
+        {"role": "system", "content": UI_ACTION_SYSTEM},
         {"role": "user", "content": content},
     ]

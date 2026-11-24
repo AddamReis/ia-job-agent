@@ -1,12 +1,14 @@
 """Resolvedor de respostas: regras locais primeiro, LLM com perfil como evidência."""
 from __future__ import annotations
 
+import re
+
 from ...core.events import EventBus
 from ...core.logging import field_summary, log_event
 from ...llm.factory import LLMRouter
-from ...llm.prompts import answer_messages
+from ...llm.prompts import answer_messages, ui_action_messages
 from ...models.domain import CandidateProfile
-from ...models.schemas import AnswerDecision
+from ...models.schemas import AnswerDecision, UiActionDecision
 from .field import FormField
 from .mapper import resolve_local
 from ..profile.builder import profile_context
@@ -85,5 +87,50 @@ class AnswerResolver:
                 field=field.label or field.identifier,
                 needs_human=decision.needs_human,
             )
+        return decision
+
+    def interpret_action(
+        self,
+        intent: str,
+        dialog_text: str,
+        buttons: list[str],
+        memory_context: str = "",
+    ) -> UiActionDecision:
+        """Escolhe, com o LLM da DGX, o botão seguro para o estado atual.
+
+        O modelo não tem permissão para inventar rótulos: a validação final em
+        ``form_dom`` exige que a ação escolhida exista entre os botões visíveis.
+        """
+        try:
+            decision = self.llm.structured(
+                ui_action_messages(intent, dialog_text, buttons, memory_context),
+                UiActionDecision,
+            )
+        except Exception as exc:
+            log_event("ui_action_llm_falha", intent=intent, error=str(exc)[:200])
+            return UiActionDecision(needs_human=True, reason="LLM indisponível")
+
+        labels = {str(item).strip() for item in buttons if str(item).strip()}
+        chosen = str(decision.action or "").strip()
+        if decision.needs_human or not chosen or chosen.lower() == "none":
+            return UiActionDecision(needs_human=True, reason=decision.reason or "sem ação segura")
+        if chosen not in labels:
+            log_event("ui_action_label_rejeitada", intent=intent, action=chosen[:80])
+            return UiActionDecision(needs_human=True, reason="botão não está visível")
+
+        sensitive = re.compile(
+            r"captcha|verifica|mfa|senha|password|pagamento|payment|termos|privacidade|"
+            r"autoriza[cç][aã]o de trabalho|visto|sponsorship|contrato",
+            re.I,
+        )
+        if sensitive.search(chosen):
+            return UiActionDecision(needs_human=True, reason="ação sensível")
+
+        log_event(
+            "ui_action_interpretada",
+            intent=intent,
+            action=chosen[:80],
+            source=str(decision.source or "llm")[:40],
+        )
         return decision
 
