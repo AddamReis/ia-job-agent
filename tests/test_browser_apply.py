@@ -419,6 +419,122 @@ def test_ensure_resume_uploaded_uses_visible_file_input(tmp_path) -> None:
     assert page.file_input.value == str(cv)
 
 
+def test_ensure_resume_uploaded_accepts_file_without_radio(tmp_path) -> None:
+    cv = tmp_path / "cv-internacional.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+    nome = cv.name
+
+    class FileInput:
+        def count(self) -> int:
+            return 1
+
+        @property
+        def last(self):
+            return self
+
+        def set_input_files(self, value: str) -> None:
+            assert value == str(cv)
+
+    class Page:
+        def __init__(self) -> None:
+            self.file_input = FileInput()
+
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input[type=radio]" in expression and "some" in expression:
+                return False
+            if "files:" in expression:
+                return {"blocked": False, "files": [[nome]], "radios": []}
+            if "querySelectorAll(" in expression:
+                return True
+            return False
+
+        def locator(self, selector):
+            assert selector == 'input[type="file"]'
+            return self.file_input
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    assert ensure_resume_uploaded(Page(), cv) == "uploaded"
+
+
+def test_advance_external_landing_decides_safe_cta(tmp_path) -> None:
+    class Locator:
+        def __init__(self, visible: bool = True) -> None:
+            self.visible = visible
+            self.clicked = False
+
+        def count(self) -> int:
+            return 1 if self.visible else 0
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self) -> bool:
+            return self.visible
+
+        def click(self) -> None:
+            self.clicked = True
+
+    class Page:
+        def __init__(self) -> None:
+            self.url = "https://vetsez.breezy.hr/p/vaga/apply"
+            self.context = self
+            self.pages = [self]
+            self.link = Locator()
+            self.clicked = False
+
+        def evaluate(self, expression, name=None):
+            if "has_form" in expression:
+                return {
+                    "url": self.url,
+                    "text": "Aplicar a la posición",
+                    "buttons": [
+                        {"text": "Aplicar a la posición", "aria": "", "href": "/apply"}
+                    ],
+                    "has_form": self.clicked,
+                    "has_file": self.clicked,
+                    "blocked": False,
+                }
+            return {}
+
+        def get_by_role(self, role, name=None):
+            if role == "link":
+                return self.link
+            return Locator(False)
+
+        def get_by_text(self, *_args, **_kwargs):
+            return Locator(False)
+
+        def locator(self, _selector):
+            return Locator(False)
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = object()
+    agent.resolver = object()
+    agent.browser = object()
+    agent._pending_ui_actions = []
+    agent._decide_ui_action = lambda *_args: SimpleNamespace(
+        action="Aplicar a la posición",
+        needs_human=False,
+        source="llm",
+        reason="abre o formulário real",
+    )
+
+    page = Page()
+    result = agent._advance_external_landing(page)
+    assert result is page
+    assert page.link.clicked is True
+    assert len(agent._pending_ui_actions) == 1
+    assert agent._pending_ui_actions[0]["intent"] == "open_external_apply"
+    assert agent._pending_ui_actions[0]["action"] == "Aplicar a la posición"
+
+
 def test_fill_field_uses_select_option_for_selects() -> None:
     class Locator:
         def __init__(self) -> None:
@@ -533,3 +649,23 @@ def test_recheck_remote_blocks_partial_remote_in_description() -> None:
 
     with pytest.raises(ValidationError, match="remoto não confirmado"):
         agent._recheck_remote(job, {"text": "80% Remote"})
+
+
+def test_recheck_remote_uses_description_not_sidebar_text() -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    description = "Trabaja 100 % remoto en un proyecto internacional."
+    job = JobOpportunity(
+        external_id="123456789",
+        title="Ingeniero de software",
+        location="Colombia - Bogota, D.C.",
+        description=description,
+    )
+
+    agent._recheck_remote(
+        job,
+        {
+            "job_text": description,
+            "text": "the office, your home, or a blend of both",
+        },
+    )

@@ -85,6 +85,12 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
       → CAPTCHA/MFA/verificação => evento FAILED, sem retry/burla
 ```
 
+- Landing externa (Breezy etc.) sem `input[type=file]`: o agente lê os CTAs visíveis,
+  usa a memória de ações + LLM da DGX para escolher o link que abre o formulário real
+  (`open_external_apply`) e só registra a decisão como sucesso após o envio concluído.
+  Atalhos de login/OAuth (LinkedIn, Indeed, Google) são vetados. O upload é confirmado
+  pelo nome do arquivo no input/DOM mesmo quando o portal não tem radio de currículo.
+
 - `classification-run` / `classification-serve`, `application-prepare-run` /
   `application-serve` e `apply-submit-run` / `apply-submit-serve` permitem operar cada
   agente isoladamente. O intervalo dos loops de preparação/classificação é

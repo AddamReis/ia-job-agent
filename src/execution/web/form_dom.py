@@ -125,7 +125,9 @@ _SUBMIT_WORDS = (
 _UPLOAD_LABELS = (
     "Carregar currículo", "Carregar curriculo", "Anexar currículo",
     "Anexar curriculo", "Selecionar arquivo", "Escolher arquivo",
-    "Upload resume", "Attach resume", "Choose file",
+    "Upload resume", "Upload CV", "Upload curriculo", "Attach resume",
+    "Attach CV", "Choose file", "Browse", "Fazer upload", "Subir currículo",
+    "Subir curriculo", "Adjuntar currículum", "Cargar CV",
 )
 
 _RESUME_STATE_JS = r"""
@@ -164,6 +166,20 @@ _RESUME_SELECT_JS = r"""
   radio.click();
   return true;
 }
+"""
+
+# Portais externos mostram o nome do arquivo em texto/link, sem radio. A checagem
+# abaixo reconhece esse estado real; ela NÃO preenche nem inventa o upload.
+_RESUME_ATTACHED_JS = r"""
+(name) => [...document.querySelectorAll(
+  'input, a, [aria-label], [title]'
+)].some(el => {
+  const value = String(el.value || '') + ' ' +
+    String(el.getAttribute('aria-label') || '') + ' ' +
+    String(el.getAttribute('title') || '') + ' ' +
+    String(el.innerText || '');
+  return value.includes(name);
+})
 """
 
 
@@ -491,12 +507,19 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
         if state.get("blocked"):
             return "blocked"
         uploaded = any(name in item for group in state.get("files", []) for item in group)
-        if uploaded:
+        if uploaded or page.evaluate(_RESUME_ATTACHED_JS, name):
             radios = state.get("radios", [])
             match = next((r for r in radios if name in r.get("label", "")), None)
             if match is not None and not match.get("checked"):
                 page.evaluate(_RESUME_SELECT_JS, name)
-            if _resume_selected(page, name):
+            # Radio é uma forma de confirmar no LinkedIn; em portais externos o
+            # próprio arquivo/input já é a evidência. Não exigir radio evita o
+            # falso "currículo não foi anexado" quando não existe essa opção.
+            if (
+                _resume_selected(page, name)
+                or uploaded
+                or page.evaluate(_RESUME_ATTACHED_JS, name)
+            ):
                 log_event("browser_apply_resume_uploaded", filename=name, button=clicked)
                 return "uploaded"
         page.wait_for_timeout(500)

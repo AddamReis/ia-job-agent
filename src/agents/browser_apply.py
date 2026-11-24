@@ -79,7 +79,42 @@ _ALREADY_APPLIED_MARKERS = (
     "aplicación enviada", "aplicacion enviada", "candidatura enviada",
     "ya te has postulado", "you already applied", "ver candidatura",
 )
+# O LinkedIn registra a candidatura em um clique quando o perfil já tem CV.
+# Essas frases são evidência do portal — não é um formulário a preencher.
+_ONE_CLICK_MARKERS = (
+    "a vaga foi movida para em andamento",
+    "clicou em candidatar-se",
+    "concluiu sua candidatura",
+)
 _MAX_FORM_STEPS = 8
+
+_LANDING_STATE_JS = r"""
+() => {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const nodes = [...document.querySelectorAll('a,button,[role="button"],label')]
+    .filter(visible);
+  const buttons = nodes.map(el => ({
+    text: (el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+    aria: (el.getAttribute('aria-label') || '').trim().slice(0, 120),
+    href: el.getAttribute('href') || '',
+  })).filter(b => b.text).slice(0, 40);
+  const body = (document.body.innerText || '');
+  return {
+    url: location.href,
+    text: body.slice(0, 1600),
+    buttons,
+    has_form: [...document.querySelectorAll('input:not([type=hidden]),textarea,select')]
+      .filter(visible).length > 0,
+    has_file: [...document.querySelectorAll('input[type=file]')]
+      .filter(visible).length > 0,
+    blocked: /captcha|verifica[cç][aã]o|unusual activity|atividade incomum/i
+      .test(body.slice(0, 3000)),
+  };
+}
+"""
 
 
 def _is_login_page(url: str, text: str) -> bool:
@@ -427,6 +462,12 @@ class BrowserApplyAgent:
             if self._detect_already_applied(page, snapshot):
                 observation.already_applied = True
                 self._log_already_applied(job, snapshot)
+                return page, snapshot, observation
+            page = self._advance_external_landing(page)
+            snapshot = snapshot_form(page)
+            if self._detect_already_applied(page, snapshot):
+                observation.already_applied = True
+                self._log_already_applied(job, snapshot)
             return page, snapshot, observation
 
         title = str(snapshot.get("title", "") or "").lower()
@@ -508,6 +549,10 @@ class BrowserApplyAgent:
             if clicked:
                 snapshot = snapshot_form(page)
                 self._ensure_no_login(page, snapshot)
+                if domain_of(page.url) != "linkedin.com":
+                    page = self._advance_external_landing(page)
+                    snapshot = snapshot_form(page)
+                    self._ensure_no_login(page, snapshot)
                 if self._detect_already_applied(page, snapshot):
                     observation.already_applied = True
                     self._log_already_applied(job, snapshot)
@@ -554,6 +599,131 @@ class BrowserApplyAgent:
             domain=domain_of(str(snapshot.get("url", "") or "")),
             url=str(snapshot.get("url", "") or "")[:160],
         )
+
+    @staticmethod
+    def _detect_one_click_applied(snapshot: dict[str, Any]) -> bool:
+        """Reconhece o clique único do LinkedIn que já registrou a candidatura."""
+        texto = str(snapshot.get("text", "") or "").lower()
+        return any(marker in texto for marker in _ONE_CLICK_MARKERS)
+
+    def _one_click_applied(self, page: Any, snapshot: dict[str, Any]) -> bool:
+        if self._detect_one_click_applied(snapshot):
+            return True
+        try:
+            body = str(page.evaluate("() => document.body.innerText") or "")
+        except Exception:
+            body = ""
+        return self._detect_one_click_applied({"text": body})
+
+    @staticmethod
+    def _normalize_landing_signature(labels: list[str]) -> str:
+        return re.sub(r"\W+", " ", " ".join(labels).lower()).strip()[:300]
+
+    @staticmethod
+    def _click_landing_cta(page: Any, label: str) -> bool:
+        padrao = re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
+        fabricas = (
+            lambda: page.get_by_role("link", name=padrao),
+            lambda: page.get_by_role("button", name=padrao),
+            lambda: page.get_by_text(label, exact=True),
+            lambda: page.locator(f'a:has-text("{label}")'),
+        )
+        for fabrica in fabricas:
+            try:
+                locator = fabrica()
+                for indice in range(locator.count()):
+                    alvo = locator.nth(indice)
+                    if hasattr(alvo, "is_visible") and not alvo.is_visible():
+                        continue
+                    alvo.click()
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _advance_external_landing(self, page: Any) -> Any:
+        """Abre o formulário real em landing externa, com decisão aprendível.
+
+        A landing pode mostrar apenas atalhos de perfil ("Usar meu currículo",
+        "Aplicar com LinkedIn") sem ``input[type=file]``. O agente interpreta o
+        estado real, escolhe o CTA que leva ao formulário e memoriza a decisão
+        após o envio concluído. Nunca toca login/OAuth/CAPTCHA.
+        """
+        state = page.evaluate(_LANDING_STATE_JS) or {}
+        if state.get("blocked"):
+            raise BlockedByPlatformError("verificação/CAPTCHA na landing externa")
+        if state.get("has_file") or state.get("has_form"):
+            return page
+
+        botoes = [
+            item
+            for item in (state.get("buttons") or [])
+            if str(item.get("text") or "").strip()
+        ]
+        sociais = re.compile(
+            r"linkedin|indeed|google|facebook|apple|oauth|sign in|iniciar sess|"
+            r"acceder|entrar|login",
+            re.I,
+        )
+        botoes = [item for item in botoes if not sociais.search(str(item.get("text", "")))]
+        rotulos = [str(item["text"]).strip() for item in botoes]
+        if not rotulos:
+            return page
+
+        dialog = {
+            "url": str(state.get("url", "") or ""),
+            "text": str(state.get("text", "") or ""),
+            "buttons": botoes,
+        }
+        decision = self._decide_ui_action(
+            "open_external_apply", dialog, "landing externa sem formulário"
+        )
+        acao = str(getattr(decision, "action", "") or "").strip()
+        if getattr(decision, "needs_human", False):
+            raise HumanActionRequired(
+                "landing externa",
+                str(getattr(decision, "reason", "") or "nenhum CTA seguro identificado"),
+            )
+        if not acao or acao not in rotulos:
+            raise ValidationError("CTA de candidatura não identificado na landing externa")
+        if not self._click_landing_cta(page, acao):
+            raise ValidationError("falha ao abrir o formulário na landing externa")
+
+        antes = {id(p) for p in page.context.pages}
+        page.wait_for_timeout(2500)
+        novas = [p for p in page.context.pages if id(p) not in antes]
+        if novas:
+            for extra in novas[1:]:
+                self.browser.close_tab(extra)
+            self.browser.close_tab(page)
+            page = novas[0]
+            page.wait_for_timeout(1500)
+
+        status = page.evaluate(_LANDING_STATE_JS) or {}
+        if status.get("blocked"):
+            raise BlockedByPlatformError("verificação/CAPTCHA após abrir o formulário")
+        snapshot = snapshot_form(page)
+        self._ensure_no_login(page, snapshot)
+        source = str(getattr(decision, "source", "") or "llm")[:40]
+        reason = str(getattr(decision, "reason", "") or "")[:240]
+        log_event(
+            "browser_apply_landing_advanced",
+            action=acao[:80],
+            source=source,
+            url=page.url[:160],
+        )
+        self._queue_ui_action(
+            {
+                "url": str(status.get("url", "") or page.url),
+                "intent": "open_external_apply",
+                "trigger": "landing externa sem formulário",
+                "action": acao,
+                "dialog_signature": self._normalize_landing_signature(rotulos),
+                "source": source,
+                "reason": reason,
+            }
+        )
+        return page
 
     def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
         """Completa OAuth Google reaproveitando a sessão do Chrome CDP.
@@ -847,11 +1017,15 @@ class BrowserApplyAgent:
         analysis_remote = job.analysis.is_remote if job.analysis else None
         if analysis_remote is False:
             raise ValidationError("a vaga deixou de ser 100% remota; envio bloqueado")
+        job_text = str(snapshot.get("job_text") or job.description or "")
         page_text = str(snapshot.get("text", "") or "")
+        # A descrição publicada é a fonte primária. O texto da página pode
+        # conter cards laterais com "office/home/blend of both" e vetar uma vaga
+        # que é 100% remota; só é usado quando a descrição não existe.
         remote_ok = is_remote_location(
             job.location,
             job.title,
-            " ".join([job.description or "", page_text]),
+            job_text or page_text,
         )
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")
@@ -1069,8 +1243,16 @@ class BrowserApplyAgent:
         try:
             self._record_easy_apply(job, observation)
             snapshot = snapshot_form(page)
+            snapshot["job_text"] = job.description or ""
             if observation.already_applied or self._detect_already_applied(page, snapshot):
                 self._record_existing_application(job, snapshot, observation)
+                return None
+            if self._one_click_applied(page, snapshot):
+                self._record_existing_application(
+                    job,
+                    snapshot,
+                    ApplyObservation(False, "clique_unico_linkedin", True),
+                )
                 return None
             steps = self._walk_steps(page, job)
             if not any(step.decisions for step in steps):
@@ -1159,8 +1341,16 @@ class BrowserApplyAgent:
         try:
             self._record_easy_apply(job, observation)
             snapshot = snapshot_form(page)
+            snapshot["job_text"] = job.description or ""
             if observation.already_applied or self._detect_already_applied(page, snapshot):
                 self._record_existing_application(job, snapshot, observation)
+                return None
+            if self._one_click_applied(page, snapshot):
+                self._record_existing_application(
+                    job,
+                    snapshot,
+                    ApplyObservation(False, "clique_unico_linkedin", True),
+                )
                 return None
             self._recheck_remote(job, snapshot)
 

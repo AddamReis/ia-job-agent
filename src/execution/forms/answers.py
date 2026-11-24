@@ -120,7 +120,8 @@ class AnswerResolver:
 
         sensitive = re.compile(
             r"captcha|verifica|mfa|senha|password|pagamento|payment|termos|privacidade|"
-            r"autoriza[cç][aã]o de trabalho|visto|sponsorship|contrato",
+            r"autoriza[cç][aã]o de trabalho|visto|sponsorship|contrato|"
+            r"linkedin|indeed|google|facebook|apple|oauth|sign in|iniciar sess|acceder",
             re.I,
         )
         if sensitive.search(chosen):
