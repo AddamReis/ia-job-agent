@@ -596,6 +596,14 @@ def reclassify(
         "--ignore-recency",
         help="Ignora a janela de 6h nesta reanálise (apenas auditoria da base)",
     ),
+    classify_stale: bool = typer.Option(
+        False,
+        "--classify-stale",
+        help=(
+            "Reclassifica o histórico EXPIRED com as regras atuais: dentro da "
+            "janela de defasagem volta para QUALIFIED; fora permanece EXPIRED."
+        ),
+    ),
 ) -> None:
     """Reaplica as regras atuais às vagas salvas, sem submeter candidaturas."""
     try:
@@ -607,18 +615,39 @@ def reclassify(
     _attach_progress(bus)
     orchestrator = _orchestrator(bus)
     aprovadas = orchestrator.reclassify_jobs(
-        statuses=alvos,
+        statuses=[JobStatus.EXPIRED] if classify_stale else alvos,
         limit=limit or None,
         job_ids=[item.strip() for item in ids.split(",") if item.strip()] or None,
         trace_id=trace_id.strip() or None,
-        all_statuses=all_statuses,
+        all_statuses=all_statuses and not classify_stale,
         ignore_recency=ignore_recency,
+        classify_stale=classify_stale,
     )
     if orchestrator.qualification.last_error:
         console.print(f"[yellow]Atenção: {orchestrator.qualification.last_error}[/yellow]")
     console.print(
         f"[green]Reclassificação concluída: {aprovadas} vaga(s) qualificada(s).[/green]"
     )
+
+
+@app.command("classification-validate")
+def classification_validate(
+    job_id: str = typer.Option(..., "--id", help="ID da vaga validada pelo operador."),
+    correct: bool = typer.Option(
+        True, "--correct/--wrong", help="Marque --wrong quando corrigir o veredito."
+    ),
+    reason: str = typer.Option("", "--reason", help="Motivo da validação."),
+) -> None:
+    """Registra validação humana como sinal de aprendizado auditável."""
+    orchestrator = _orchestrator()
+    job = orchestrator.repo.get_job(job_id)
+    if job is None:
+        console.print(f"[red]Vaga não encontrada: {job_id}[/red]")
+        raise typer.Exit(code=1)
+    gravados = orchestrator.qualification_memory.record_validation(
+        job, correct=correct, reason=reason
+    )
+    console.print(json.dumps({"job_id": job_id, "feedback": gravados}, ensure_ascii=False))
 
 
 @app.command("fast-lane")

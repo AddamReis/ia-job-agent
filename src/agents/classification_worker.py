@@ -58,13 +58,19 @@ def sort_for_classification(
     companies: dict[str, Company],
     known_portals: set[str],
 ) -> list[JobOpportunity]:
-    """Empresa conhecida primeiro; dentro do grupo, publicação mais recente."""
+    """Empresa conhecida primeiro; dentro do grupo, inclusão mais recente.
+
+    A data que manda é ``created_at`` (entrada no banco), não ``posted_at``
+    (publicação no portal). Isso mantém a fila estável mesmo quando o card
+    descoberto traz uma data de publicação imprecisa ou ausente.
+    """
 
     def key(job: JobOpportunity) -> tuple[int, float, str]:
         prioridade, _ = company_priority(job, companies, known_portals)
+        inclusao = job.created_at or job.posted_at
         return (
             prioridade,
-            -(job.posted_at.timestamp() if job.posted_at else 0),
+            -(inclusao.timestamp() if inclusao is not None else 0),
             (job.company or "").casefold(),
         )
 

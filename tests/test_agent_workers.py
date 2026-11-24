@@ -224,6 +224,23 @@ def RepositoryNormalize(name: str) -> str:
     return StubRepo.normalize_company(name)
 
 
+def test_classification_orders_by_inclusion_not_publication() -> None:
+    agora = datetime.now()
+    inclusa_depois = _job("Acme", "Publicação antiga, inclusão recente")
+    inclusa_depois.posted_at = agora - timedelta(days=5)
+    inclusa_depois.created_at = agora - timedelta(minutes=1)
+
+    inclusa_antes = _job("Acme", "Publicação recente, inclusão antiga")
+    inclusa_antes.posted_at = agora - timedelta(minutes=1)
+    inclusa_antes.created_at = agora - timedelta(days=5)
+
+    ordenadas = sort_for_classification(
+        [inclusa_antes, inclusa_depois], {}, set()
+    )
+
+    assert [job.id for job in ordenadas] == [inclusa_depois.id, inclusa_antes.id]
+
+
 def test_classification_worker_uses_fast_lane_for_trusted_portal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,7 +397,7 @@ def test_submit_worker_sends_only_after_review_check() -> None:
 
 
 def test_submit_worker_revalidates_recency_before_sending() -> None:
-    job, approval = _approved_job(posted_at=datetime.now() - timedelta(days=2))
+    job, approval = _approved_job(posted_at=datetime.now() - timedelta(days=5))
     repo = StubRepo([job])
     repo.approvals[job.id] = approval
     repo.publish_agent_event(

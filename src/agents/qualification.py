@@ -221,10 +221,11 @@ def technologies_match(skill: str, known: str) -> bool:
 
 
 def stale_reason(job: JobOpportunity, settings: Settings) -> str | None:
-    """Só classifica como EXPIRED após ``expired_after_hours`` (padrão 24h).
+    """Só classifica como EXPIRED após ``expired_after_hours`` (config: 96h).
 
-    A janela de descoberta (``recency_hours``) continua em 6h; a triagem de
-    histórico/reclassificação é mais larga, sobretudo na fase de testes.
+    A janela de descoberta (``recency_hours``) continua em 6h. Como a
+    classificação leva segundos, uma vaga publicada há 1–3 dias ainda vale
+    análise; ``EXPIRED``/passado o prazo fica reservado ao histórico defasado.
     """
     search_cfg = settings.search
     window = search_cfg.expired_after_hours or search_cfg.recency_hours
@@ -463,7 +464,6 @@ class JobQualificationAgent:
         # analisa o histórico da base sem aplicar a janela de 6h. A fila de
         # candidaturas continua revalidando a idade antes de qualquer envio.
         self.ignore_recency = False
-
     def _stale_reason(self, job: JobOpportunity) -> str | None:
         if self.ignore_recency:
             return None

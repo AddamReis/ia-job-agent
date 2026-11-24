@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -90,6 +91,71 @@ def _bucket(
     return "approval"
 
 
+# Tecnologias de core que merecem badge quando faltam. Plataformas
+# (Docker/Jenkins/Kafka/AWS) e diferenciais ficam de fora de propósito: as
+# regras de fit já não descontam por eles.
+_CORE_TECH_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"next\.?js|nextjs", "Next.js"),
+    (r"\bjava\b(?!script)", "Java"),
+    (r"\bjavascript\b", "JavaScript"),
+    (r"\btypescript\b", "TypeScript"),
+    (r"\bnode\.?js\b|\bnodejs\b", "Node.js"),
+    (r"\breact(?:\.js)?\b", "React"),
+    (r"\bangular\b", "Angular"),
+    (r"\bvue(?:\.js)?\b", "Vue"),
+    (r"\bpython\b", "Python"),
+    (r"\bphp\b", "PHP"),
+    (r"\bruby\b|\brails\b", "Ruby"),
+    (r"\bgolang\b|\bgo\s+lang\b", "Go"),
+    (r"\bkotlin\b", "Kotlin"),
+    (r"\bswift\b", "Swift"),
+    (r"\brust\b", "Rust"),
+    (r"\bscala\b", "Scala"),
+    (r"(?<!\w)\.net\b|\bdotnet\b|\basp\.net\b", ".NET"),
+    (r"(?<!\w)c#(?!\w)|\bcsharp\b", "C#"),
+    (r"\bdjango\b", "Django"),
+    (r"\bflask\b", "Flask"),
+    (r"\bspring(?:\s+boot)?\b", "Spring"),
+    (r"\blaravel\b", "Laravel"),
+    (r"\bexpress(?:\.js)?\b", "Express"),
+    (r"\bpostgres(?:ql)?\b", "Postgres"),
+    (r"\bsql\s+server\b", "SQL Server"),
+    (r"\bmysql\b", "MySQL"),
+    (r"\bmongo\s?db\b", "MongoDB"),
+    (r"\boracle\b", "Oracle"),
+)
+
+
+def missing_core_technologies(job: JobOpportunity, limit: int = 3) -> list[str]:
+    """Tecnologias core da vaga que o perfil não cobre, para badge na PWA.
+
+    Só entram os vereditos ``core_missing`` do analista de fit. Requisitos não
+    tecnológicos e plataformas são descartados pelo filtro de padrões, evitando
+    badge de "falta Docker" ou "faltam 5 anos de experiência".
+    """
+    fit = job.fit_assessment
+    if fit is None:
+        return []
+    text_parts: list[str] = []
+    for verdict in fit.requirement_verdicts:
+        if getattr(verdict, "verdict", None) != "core_missing":
+            continue
+        text_parts.append(str(getattr(verdict, "requirement", "") or ""))
+        text_parts.append(str(getattr(verdict, "note", "") or ""))
+    texto = " ".join(text_parts).lower()
+    if not texto.strip():
+        return []
+    faltando: list[str] = []
+    for pattern, label in _CORE_TECH_PATTERNS:
+        if label in faltando:
+            continue
+        if re.search(pattern, texto, re.I):
+            faltando.append(label)
+            if len(faltando) >= limit:
+                break
+    return faltando
+
+
 def _summary_job(
     job: JobOpportunity,
     min_score: int,
@@ -114,6 +180,7 @@ def _summary_job(
         "decision": qualification.decision if qualification else None,
         "hard_reject_reason": qualification.hard_reject_reason if qualification else None,
         "reason": reason,
+        "missing_core": missing_core_technologies(job),
         "status": job.status.value,
         "approval_status": approval_status,
         "error": automation_error or None,
@@ -158,7 +225,8 @@ def compute_checks(job: JobOpportunity) -> dict[str, dict[str, Any]]:
         },
         "recency": {
             "ok": stale is None,
-            "detail": stale or "dentro da janela de 24 horas",
+            "detail": stale
+            or f"dentro da janela de {settings.search.expired_after_hours} horas",
         },
         "score": {
             "ok": score_ok,
@@ -185,6 +253,7 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
             automation_error=automation_error,
         ),
         "checks": compute_checks(job),
+        "missing_core": missing_core_technologies(job),
         "approval": _serialize(approval) if approval else None,
         "review_decision": decision,
         "automation_error": automation_error or None,

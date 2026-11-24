@@ -54,7 +54,7 @@ def test_stale_reason_accepts_timezone_aware_posted_at_from_postgres() -> None:
     )
     antiga = JobOpportunity(
         title="Engineer",
-        posted_at=datetime.now(timezone.utc) - timedelta(days=3),
+        posted_at=datetime.now(timezone.utc) - timedelta(days=5),
         posted_precision="day",
     )
 

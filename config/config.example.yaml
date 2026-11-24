@@ -146,7 +146,7 @@ search:
   # Descoberta: ate 6h desde a publicacao; sem idade explicita nao entra.
   recency_hours: 6
   # So classifica como EXPIRED apos 24h (auditoria/historico, fase de testes).
-  expired_after_hours: 24
+  expired_after_hours: 96
   require_explicit_recency: true
   # Moedas elegíveis: so USD/EUR. Salario nao entra no score, mas a moeda
   # filtra: BRL/outras reprovam; Brasil/PT-BR exige USD explicito.

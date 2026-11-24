@@ -184,9 +184,9 @@ Configurada em `config/config.yaml` (`search` + `qualification.reject`):
 - Comparação de tecnologias normalizada: `.NET`, `DotNet`, `Dot Net`, `.NET Core` e `.Net Framework`
   viram `net`; `C#` e `C Sharp` viram `c`. Buscas incluem variantes `DotNet Engineer`/`DotNet Developer`.
 - `recency_hours: 6` + `require_explicit_recency: true`: descoberta só com idade explícita de
-  **até 6 horas**. `expired_after_hours: 24`: só vira `EXPIRED` após **24 horas** (janela separada,
-  mais larga na fase de testes); entre 6h e 24h a vaga ainda é classificada normalmente. A fila de
-  candidaturas revalida a idade antes de qualquer envio.
+  **até 6 horas**. `expired_after_hours: 96`: só vira `EXPIRED` após **4 dias** (janela separada da
+  descoberta); entre 6h e 96h a vaga ainda é classificada normalmente. A fila de candidaturas e o
+  preflight de envio revalidam a mesma idade.
 - A busca pública usa `f_TPR=r86400` apenas para reduzir volume; a autoridade é a idade explícita
   lida do `<time>` de cada card (`"16 minutes ago"`, `"2 hours ago"`). O ID real vem do JSON-LD e
   a descrição da página `jobs/view/<id>` — o dedupe é feito por esse ID, nunca por hash de texto.
@@ -260,7 +260,7 @@ O filtro nativo `f_TPR=r86400` é best-effort: ele só reduz o volume. A **autor
 explícita** lida do `<time>` de cada vaga (`"16 minutes ago"`, `"2 hours ago"` etc.). Vagas sem
 idade explicitada ou acima de `search.recency_hours` (6h) são descartadas na descoberta, antes
 mesmo da chamada à LLM. Na reclassificação, só vira `EXPIRED` após `search.expired_after_hours`
-(24h; nunca é excluída do banco). Ao final da
+(96h/4 dias; nunca é excluída do banco). Ao final da
 busca, a thread drena o que sobrou; pause/stop também a interrompem. A descoberta é somente HTML
 público — nunca cai para o Android (`browser.fallback_to_android: false`).
 

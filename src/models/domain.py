@@ -215,6 +215,8 @@ class JobOpportunity(BaseModel):
     dedupe_hash: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+    # Auditoria do histórico: último reprocessamento sem entrada na fila de Apply.
+    audit_classified_at: datetime | None = None
 
 
 class Company(BaseModel):
@@ -338,7 +340,9 @@ class QualificationFeedback(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     trace_id: str = ""
     opportunity_id: str = ""
-    source: Literal["human_approval", "application_outcome", "reclassification"]
+    source: Literal[
+        "human_approval", "application_outcome", "reclassification", "human_validation"
+    ]
     verdict: Literal["positive", "negative", "attention"]
     topic: str
     detail: str = ""

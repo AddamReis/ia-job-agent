@@ -18,6 +18,7 @@ _SOURCE_LABEL = {
     "human_approval": "decisão humana",
     "application_outcome": "desfecho da candidatura",
     "reclassification": "reclassificação",
+    "human_validation": "validação humana",
 }
 _VERDICT_LABEL = {
     "positive": "positivo",
@@ -158,6 +159,22 @@ class QualificationMemory:
                 reason=after.restriction_details or "reclassificação reprovou a vaga",
             )
         return 0
+
+    def record_validation(
+        self, job: JobOpportunity, *, correct: bool, reason: str = ""
+    ) -> int:
+        """Registra a revisão humana de uma classificação já gravada.
+
+        Diferente de ``record_reclassification``, aqui o sinal vem de alguém
+        conferindo o veredito — não do próprio modelo se autoavalizando.
+        """
+        return self.record(
+            job,
+            source="human_validation",
+            verdict="positive" if correct else "negative",
+            reason=reason
+            or ("classificação confirmada na validação" if correct else "classificação corrigida na validação"),
+        )
 
     def context_for(self, job: JobOpportunity, limit: int = 8) -> str:
         """Devolve contexto curto, priorizando sinais parecidos com a vaga atual."""

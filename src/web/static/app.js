@@ -113,6 +113,11 @@ function renderList() {
     meta.append(pill(job.status || '—', statusKind(job.status)));
     meta.append(pill(`Score ${job.score ?? '—'}`, job.score >= 70 ? 'ok' : 'warn'));
     meta.append(pill(job.decision || 'SEM DECISÃO', job.decision === 'APPLY' ? 'ok' : 'warn'));
+    if (job.bucket === 'rejected') {
+      for (const tech of job.missing_core || []) {
+        meta.append(pill(`Falta ${tech}`, 'no'));
+      }
+    }
     meta.append(document.createTextNode(`${job.location || '—'} · ${fmtDate(job.posted_at)}`));
     card.append(meta);
     card.append(el('div', 'reason', job.reason || ''));
@@ -210,6 +215,10 @@ function renderDetail(data) {
   root.append(chips(a.required_skills));
   root.append(section('Skills desejáveis'));
   root.append(chips(a.preferred_skills));
+  if ((data.missing_core || []).length) {
+    root.append(section('Core ausente'));
+    root.append(chips(data.missing_core));
+  }
 
   root.append(section('Formulário preparado'));
   const answers = (data.approval && data.approval.answers) || [];

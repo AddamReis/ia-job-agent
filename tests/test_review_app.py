@@ -9,6 +9,7 @@ import pytest
 import src.web.review_app as review
 from src.core.state import JobStatus
 from src.models.domain import ApprovalRequest, JobOpportunity
+from src.models.schemas import JobFitAssessment, RequirementVerdict
 
 
 class StubRepo:
@@ -211,11 +212,34 @@ def test_pagination_sort_and_text_query(monkeypatch: pytest.MonkeyPatch) -> None
     assert paged["counts"]["all"] == 12
 
 
+def test_missing_core_badge_only_for_real_core_technologies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job("ref", JobStatus.REJECTED_BY_FILTER)
+    job.fit_assessment = JobFitAssessment(
+        core_language="Java",
+        language_fit="misaligned",
+        requirement_verdicts=[
+            RequirementVerdict(requirement="Java 17 e Spring Boot", verdict="core_missing"),
+            RequirementVerdict(requirement="Next.js e React", verdict="core_missing"),
+            RequirementVerdict(requirement="Docker e Jenkins", verdict="platform_or_tool"),
+            RequirementVerdict(requirement="5 anos de experiência", verdict="core_missing"),
+        ],
+    )
+
+    # Plataformas e requisitos não tecnológicos não viram badge.
+    assert review.missing_core_technologies(job) == ["Next.js", "Java", "React"]
+
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo([job]))
+    item = review.job_index("rejected")["items"][0]
+    assert item["missing_core"] == ["Next.js", "Java", "React"]
+
+
 def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v3'" in source
+    assert "const CACHE = 'review-pwa-v4'" in source
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at

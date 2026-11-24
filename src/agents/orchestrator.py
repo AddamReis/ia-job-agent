@@ -182,6 +182,7 @@ class Orchestrator:
         trace_id: str | None = None,
         all_statuses: bool = False,
         ignore_recency: bool = False,
+        classify_stale: bool = False,
     ) -> int:
         """Reanalisa vagas já salvas com as regras atuais (sem candidatar).
 
@@ -196,6 +197,11 @@ class Orchestrator:
         A supressão continua ativa apenas para vagas recém-descobertas.
         ``ignore_recency`` desativa a janela de 6h apenas nesta reanálise (útil
         para auditar o histórico); a fila de candidaturas revalida a idade.
+        ``classify_stale`` seleciona só ``EXPIRED`` ainda não auditadas e aplica
+        as regras atuais: se a publicação ainda estiver dentro da janela de
+        defasagem (config: 4 dias), a vaga volta para ``QUALIFIED`` e para a
+        fila com gate humano; se estiver fora, permanece ``EXPIRED``. Todas
+        recebem ``audit_classified_at`` para não serem reprocessadas.
         """
         terminal = {
             JobStatus.SUBMITTED,
@@ -205,7 +211,17 @@ class Orchestrator:
             JobStatus.PENDING_APPROVAL,
             JobStatus.APPLYING,
         }
-        if trace_id:
+        if classify_stale:
+            # Seleção explícita no banco: o histórico já vem como EXPIRED e só
+            # as ainda não auditadas entram. O limit é aplicado depois.
+            pendentes = [
+                job
+                for job in self.repo.list_jobs(status=JobStatus.EXPIRED)
+                if job.status not in terminal and job.audit_classified_at is None
+            ]
+            vagas = pendentes[:limit] if limit else pendentes
+            log_event("stale_reclassification_selected", count=len(vagas))
+        elif trace_id:
             vagas = [
                 job
                 for job in self.repo.list_jobs(trace_id=trace_id, limit=limit)
@@ -245,9 +261,20 @@ class Orchestrator:
         suppression = self.qualification.suppression
         previous_ignore_recency = self.qualification.ignore_recency
         self.qualification.suppression = None
+        # classify_stale NÃO ignora a janela: ela é justamente o critério que
+        # separa "volta para a fila" de "continua defasada".
         self.qualification.ignore_recency = previous_ignore_recency or ignore_recency
         try:
             processadas = self.qualification.run(job_ids=[job.id for job in vagas])
+            if classify_stale:
+                # Marca também as que falharam na LLM: sem isso um lote novo
+                # ficaria preso repetindo sempre as mesmas vagas quebradas.
+                for job in vagas:
+                    atual = self.repo.get_job(job.id)
+                    if atual is not None and atual.audit_classified_at is None:
+                        atual.audit_classified_at = datetime.now()
+                        self.repo.update_job(atual)
+                log_event("stale_reclassification_finished", count=processadas)
             memory = getattr(self, "qualification_memory", None)
             for job_id, anterior in status_anterior.items():
                 atual = self.repo.get_job(job_id)

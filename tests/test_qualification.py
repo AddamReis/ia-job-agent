@@ -372,23 +372,23 @@ def test_remote_detection_rejects_hybrid_marker():
     assert not is_remote_location("São Paulo, SP (Hybrid)")
 
 
-def test_posting_older_than_24_hours_is_rejected():
+def test_posting_older_than_four_days_is_rejected():
     job = _job(
         "Brazil (Remote)",
         "USD 120,000",
-        posted_at=datetime.now() - timedelta(hours=25),
+        posted_at=datetime.now() - timedelta(hours=97),
         posted_precision="hour",
     )
     _agent(_facts()).qualify(job)
     assert job.qualification.decision == "SKIP"
-    assert "24 horas" in job.qualification.hard_reject_reason
+    assert "96 horas" in job.qualification.hard_reject_reason
 
 
-def test_posting_between_6_and_24_hours_is_kept_in_testing():
+def test_posting_between_6_and_96_hours_is_kept():
     job = _job(
         "Brazil (Remote)",
         "USD 120,000",
-        posted_at=datetime.now() - timedelta(hours=12),
+        posted_at=datetime.now() - timedelta(hours=72),
         posted_precision="hour",
     )
     _agent(_facts()).qualify(job)
@@ -399,10 +399,10 @@ def test_posting_without_explicit_recency_is_rejected():
     job = _job("Brazil (Remote)", "USD 120,000", posted_at=None, posted_precision="unknown")
     _agent(_facts()).qualify(job)
     assert job.qualification.decision == "SKIP"
-    assert "24 horas" in job.qualification.hard_reject_reason
+    assert "96 horas" in job.qualification.hard_reject_reason
 
 
-def test_fresh_posting_within_24_hours_is_approved():
+def test_fresh_posting_within_96_hours_is_approved():
     job = _job(
         "Brazil (Remote)",
         "USD 120,000",
@@ -438,7 +438,7 @@ def test_stale_jobs_are_rejected_without_calling_llm():
     stale = _job(
         "Brazil (Remote)",
         "USD 120,000",
-        posted_at=datetime.now() - timedelta(hours=25),
+        posted_at=datetime.now() - timedelta(hours=97),
         posted_precision="hour",
     )
     fresh = _job(
@@ -456,18 +456,18 @@ def test_stale_jobs_are_rejected_without_calling_llm():
     agent.run()
 
     assert stale.status == JobStatus.EXPIRED
-    assert "24 horas" in stale.qualification.hard_reject_reason
+    assert "96 horas" in stale.qualification.hard_reject_reason
     assert fresh.status == JobStatus.QUALIFIED
     # Somente a vaga fresca vai à LLM: 1 extração + 1 analista semântico.
     assert llm.calls == 2
 
 
 def test_ignore_recency_reanalyzes_stale_job():
-    """A reclassificação de auditoria pode desativar a janela de 6h."""
+    """A reclassificação de auditoria pode desativar a janela de defasagem."""
     stale = _job(
         "Brazil (Remote)",
         "USD 120,000",
-        posted_at=datetime.now() - timedelta(hours=10),
+        posted_at=datetime.now() - timedelta(hours=100),
         posted_precision="hour",
     )
     llm = CountingLLM(_facts())
@@ -481,7 +481,7 @@ def test_ignore_recency_reanalyzes_stale_job():
 
     assert stale.status == JobStatus.QUALIFIED
     assert llm.calls == 2
-    assert "6 horas" not in json.dumps(stale.qualification.reasons, ensure_ascii=False)
+    assert "96 horas" not in json.dumps(stale.qualification.reasons, ensure_ascii=False)
 
 
 

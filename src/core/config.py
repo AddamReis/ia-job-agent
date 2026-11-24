@@ -112,7 +112,7 @@ class SearchConfig(BaseModel):
     recency_hours: int = 6
     # Janela para classificar como EXPIRED (auditoria/histórico). Separada da
     # descoberta: na fase de testes, 6h descartava cedo demais o histórico.
-    expired_after_hours: int = 24
+    expired_after_hours: int = 96
     currencies: list[str] = Field(default_factory=lambda: ["USD", "EUR"])
     require_salary: bool = False
     remote_only: bool = True

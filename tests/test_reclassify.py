@@ -1,4 +1,6 @@
 """Rota de reclassificação por Trace ID e bypass de supressão em dados existentes."""
+from datetime import datetime
+
 from src.agents.orchestrator import Orchestrator
 from src.core.state import JobStatus
 from src.models.domain import JobOpportunity
@@ -120,6 +122,37 @@ def test_reclassify_ignore_recency_is_scoped_to_the_run():
 
     assert orch.qualification.ignore_recency_during_run is True
     assert orch.qualification.ignore_recency is False
+
+
+def test_reclassify_classify_stale_applies_current_window_and_marks_audit():
+    jobs = [
+        _job(TRACE_A, JobStatus.EXPIRED),
+        _job(TRACE_B, JobStatus.QUALIFIED),
+    ]
+    orch, _ = _orchestrator(jobs)
+
+    aprovadas = orch.reclassify_jobs(classify_stale=True)
+
+    assert aprovadas == 1
+    assert orch.qualification.seen == [jobs[0].id]
+    # A vaga volta para a fila com as regras atuais; a janela NÃO é ignorada.
+    assert jobs[0].status == JobStatus.DISCOVERED
+    assert jobs[0].audit_classified_at is not None
+    assert jobs[1].status == JobStatus.QUALIFIED
+    assert orch.qualification.ignore_recency_during_run is False
+    assert orch.qualification.ignore_recency is False
+
+
+def test_reclassify_classify_stale_skips_already_audited():
+    ja = _job(TRACE_A, JobStatus.EXPIRED)
+    ja.audit_classified_at = datetime.now()
+    pendente = _job(TRACE_A, JobStatus.EXPIRED)
+    orch, _ = _orchestrator([ja, pendente])
+
+    orch.reclassify_jobs(classify_stale=True)
+
+    assert orch.qualification.seen == [pendente.id]
+    assert ja.audit_classified_at is not None
 
 
 def test_reclassify_default_keeps_original_status_filter():
