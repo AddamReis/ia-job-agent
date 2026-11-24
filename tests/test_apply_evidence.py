@@ -400,6 +400,7 @@ def test_submit_attaches_step_and_confirmation_evidence(
     agent = _walk_agent(tmp_path)
     agent.repo = repo
     agent.profile = CandidateProfile(documents={"resume": "cv.pdf"})
+    agent.settings.profile.cv_path = "/app/data/cv/Addam.pdf"
     agent.memory = None
     agent.bus = None
     agent.browser = SimpleNamespace(close_tab=lambda _page: None)
@@ -485,6 +486,7 @@ def test_submit_attaches_step_and_confirmation_evidence(
     assert [answer.step for answer in application.answers] == [1, 2]
     assert preenchidos == ["addam@example.com", "https://www.linkedin.com/in/addam"]
     assert capturas == ["step", "step", "confirmation"]
+    assert application.resume_path == "/app/data/cv/Addam.pdf"
     assert repo.applications == [application]
 
 

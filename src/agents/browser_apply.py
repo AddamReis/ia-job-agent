@@ -849,6 +849,12 @@ class BrowserApplyAgent:
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")
 
+    def _cv_path(self) -> str:
+        """Caminho real do CV no runtime (override da DGX tem precedência)."""
+        return str(
+            self.settings.profile.cv_path or self.profile.documents.get("resume", "")
+        )
+
     def _handle_resume(
         self, page: Any, snapshot: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
@@ -858,7 +864,7 @@ class BrowserApplyAgent:
         controle de upload aparece em steps posteriores. A checagem final em
         ``_walk_steps`` impede o envio caso nenhum step tenha anexado o CV.
         """
-        cv_path = self.settings.profile.cv_path or self.profile.documents.get("resume", "")
+        cv_path = self._cv_path()
         status = ensure_resume_uploaded(page, cv_path)
         log_event(
             "browser_apply_resume",
@@ -954,7 +960,7 @@ class BrowserApplyAgent:
             title=job.title,
             status="SUBMITTED",
             channel=job.channel,
-            resume_path=self.profile.documents.get("resume", ""),
+            resume_path=self._cv_path(),
             portal_url=url,
             notes=f"candidatura já existente no portal: {evidencia}",
             success_feedback=evidencia,
@@ -1195,7 +1201,7 @@ class BrowserApplyAgent:
                 title=job.title,
                 status="SUBMITTED",
                 channel=job.channel,
-                resume_path=self.profile.documents.get("resume", ""),
+                resume_path=self._cv_path(),
                 portal_url=prepared.url,
                 answers=self._answers_from_steps(steps),
                 evidence=evidencias,
