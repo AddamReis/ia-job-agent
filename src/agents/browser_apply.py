@@ -227,11 +227,16 @@ class BrowserApplyAgent:
         lista de steps com os índices válidos para esta página.
         """
         steps: list[PreparedStep] = []
+        resume_ready = False
         for number in range(1, _MAX_FORM_STEPS + 1):
             self._ensure_not_blocked(page)
             snapshot = snapshot_form(page)
-            if number == 1:
-                snapshot = self._handle_resume(page, snapshot)
+            if not resume_ready:
+                # Em candidaturas paginadas o campo de CV pode aparecer só no
+                # step 2/3. Tentar em cada step evita reprovar o envio antes da
+                # hora; a checagem final barra qualquer envio sem currículo.
+                snapshot, status = self._handle_resume(page, snapshot)
+                resume_ready = status in {"uploaded", "selected", "already_attached"}
                 self._ensure_not_blocked(page)
             decisions = self._decide(snapshot)
             rotulo = next_step_label(page)
@@ -248,6 +253,8 @@ class BrowserApplyAgent:
             steps.append(step)
 
             if not rotulo or not click_next(page, rotulo):
+                if not resume_ready:
+                    raise ValidationError("currículo não foi anexado ao formulário")
                 return steps
             page.wait_for_timeout(1200)
             state = submission_state(page)
@@ -257,8 +264,12 @@ class BrowserApplyAgent:
                 )
             if state == "submitted":
                 if allow_submit:
+                    if not resume_ready:
+                        raise ValidationError("currículo não foi anexado ao formulário")
                     return steps
                 raise ValidationError("formulário foi enviado antes da aprovação humana")
+        if not resume_ready:
+            raise ValidationError("currículo não foi anexado ao formulário")
         raise ValidationError(
             f"formulário excedeu {_MAX_FORM_STEPS} steps; requer inspeção humana"
         )
@@ -801,8 +812,13 @@ class BrowserApplyAgent:
 
     def _handle_resume(
         self, page: Any, snapshot: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Anexa o CV internacional (config) sem duplicar e atualiza o snapshot."""
+    ) -> tuple[dict[str, Any], str]:
+        """Tenta anexar o CV no step atual e devolve ``(snapshot, status)``.
+
+        ``upload_button_not_found`` é provisório: em formulários paginados o
+        controle de upload aparece em steps posteriores. A checagem final em
+        ``_walk_steps`` impede o envio caso nenhum step tenha anexado o CV.
+        """
         cv_path = self.settings.profile.cv_path or self.profile.documents.get("resume", "")
         status = ensure_resume_uploaded(page, cv_path)
         log_event(
@@ -812,17 +828,16 @@ class BrowserApplyAgent:
         )
         if status == "blocked":
             raise BlockedByPlatformError("verificação/CAPTCHA ao anexar currículo")
-        invalid = {
-            "missing", "select_failed", "upload_button_not_found",
-            "file_input_not_found", "unverified",
-        }
+        if status == "missing":
+            raise ValidationError("currículo informado não existe")
+        invalid = {"select_failed", "file_input_not_found", "unverified"}
         if status in invalid:
             raise ValidationError(f"upload do currículo não confirmado: {status}")
         if status in {"uploaded", "selected"}:
             # O upload insere um novo radio: os índices do snapshot mudam.
             page.wait_for_timeout(1200)
-            return snapshot_form(page)
-        return snapshot
+            return snapshot_form(page), status
+        return snapshot, status
 
     def _decide(self, snapshot: dict[str, Any]) -> list[FillDecision]:
         url = snapshot.get("url", "")

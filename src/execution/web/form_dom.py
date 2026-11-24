@@ -196,25 +196,32 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
         return "select_failed"
 
     clicked = ""
-    for label in _UPLOAD_LABELS:
-        try:
-            locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
-            if locator.count() == 0:
-                continue
-            locator.first.click()
-            clicked = label
-            break
-        except Exception:
-            continue
-    if not clicked:
-        return "upload_button_not_found"
-
-    # O LinkedIn cria um input[type=file] oculto quando o botão é clicado.
+    # Alguns portais (Greenhouse, formulários paginados) já expõem o input.
+    # Nesses casos não há botão para clicar: usar o input direto evita o falso
+    # "upload_button_not_found" quando o campo está visível.
     file_input = page.locator('input[type="file"]')
     if file_input.count() == 0:
-        page.wait_for_timeout(1000)
-    if file_input.count() == 0:
-        return "file_input_not_found"
+        clicked = ""
+        for label in _UPLOAD_LABELS:
+            try:
+                locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
+                if locator.count() == 0:
+                    locator = page.get_by_text(label, exact=False)
+                if locator.count() == 0:
+                    continue
+                locator.first.click()
+                clicked = label
+                break
+            except Exception:
+                continue
+        if not clicked:
+            return "upload_button_not_found"
+
+        # O LinkedIn cria um input[type=file] oculto quando o botão é clicado.
+        if file_input.count() == 0:
+            page.wait_for_timeout(1000)
+        if file_input.count() == 0:
+            return "file_input_not_found"
     file_input.last.set_input_files(str(cv))
 
     deadline = time.time() + 20

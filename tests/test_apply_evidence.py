@@ -15,7 +15,7 @@ from src.agents.browser_apply import (
     PreparedStep,
 )
 from src.core.config import Settings
-from src.core.errors import BlockedByPlatformError
+from src.core.errors import BlockedByPlatformError, ValidationError
 from src.core.state import JobStatus
 from src.execution.web.form_dom import (
     capture_screenshot,
@@ -204,7 +204,7 @@ def test_walk_steps_recomputes_all_steps_for_approval(
     )
     rotulos = iter(["Next", ""])
     avancos: list[str] = []
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: snap)
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form", lambda page: next(snapshots)
     )
@@ -231,11 +231,68 @@ def test_walk_steps_recomputes_all_steps_for_approval(
     assert [resposta.step for resposta in respostas] == [1, 2]
 
 
+def test_walk_steps_retries_resume_until_later_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Easy Apply só mostra o CV em steps posteriores; não pode reprovar no step 1."""
+    agent = _walk_agent(tmp_path)
+    snapshots = iter(
+        [
+            _snapshot("https://portal.test/step-1", "Email"),
+            _snapshot("https://portal.test/step-2", "LinkedIn URL", index=3),
+        ]
+    )
+    statuses = iter(["upload_button_not_found", "uploaded"])
+    tentativas: list[str] = []
+
+    def handle(page, snap):
+        status = next(statuses)
+        tentativas.append(status)
+        return snap, status
+
+    monkeypatch.setattr(agent, "_handle_resume", handle)
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form", lambda page: next(snapshots)
+    )
+    monkeypatch.setattr(
+        "src.agents.browser_apply.next_step_label", lambda page: "Next" if len(tentativas) == 1 else ""
+    )
+    monkeypatch.setattr(
+        "src.agents.browser_apply.click_next", lambda page, label: True
+    )
+    monkeypatch.setattr("src.agents.browser_apply.submission_state", lambda page: "unknown")
+
+    steps = agent._walk_steps(
+        FakePage(), JobOpportunity(external_id="123456789", title="Dev", company="Acme")
+    )
+
+    assert [step.number for step in steps] == [1, 2]
+    assert tentativas == ["upload_button_not_found", "uploaded"]
+
+
+def test_walk_steps_blocks_submit_without_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = _walk_agent(tmp_path)
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "upload_button_not_found"))
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda page: _snapshot("https://portal.test/step-1", "Email"),
+    )
+    monkeypatch.setattr("src.agents.browser_apply.next_step_label", lambda page: "")
+    monkeypatch.setattr("src.agents.browser_apply.submission_state", lambda page: "unknown")
+
+    with pytest.raises(ValidationError, match="currículo não foi anexado"):
+        agent._walk_steps(
+            FakePage(), JobOpportunity(external_id="123456789", title="Dev", company="Acme")
+        )
+
+
 def test_walk_steps_stops_on_captcha(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     agent = _walk_agent(tmp_path)
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: snap)
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form", lambda page: _snapshot("https://x.test", "Email")
     )

@@ -288,6 +288,68 @@ def test_ensure_resume_uploaded_skips_attached_resume(tmp_path) -> None:
     assert page.calls == 1
 
 
+def test_ensure_resume_uploaded_uses_visible_file_input(tmp_path) -> None:
+    cv = tmp_path / "cv-internacional.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+    nome = cv.name
+
+    class FileInput:
+        def __init__(self) -> None:
+            self.value: str | None = None
+
+        def count(self) -> int:
+            return 1
+
+        @property
+        def last(self):
+            return self
+
+        def set_input_files(self, value: str) -> None:
+            self.value = value
+
+    class Page:
+        def __init__(self) -> None:
+            self.file_input = FileInput()
+            self.uploaded = False
+            self.selected = False
+
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return self.selected
+            if "const radio" in expression:
+                self.selected = True
+                return True
+            if "input[type=radio]" in expression and "some" in expression:
+                return self.uploaded
+            if "files:" in expression:
+                self.uploaded = self.file_input.value is not None
+                return {
+                    "blocked": False,
+                    "files": [[nome]] if self.uploaded else [],
+                    "radios": (
+                        [{"label": nome, "checked": self.selected}] if self.uploaded else []
+                    ),
+                }
+            return False
+
+        def locator(self, selector):
+            assert selector == 'input[type="file"]'
+            return self.file_input
+
+        def get_by_role(self, *args, **kwargs):
+            raise AssertionError("input visível não deve exigir clique em botão")
+
+        def get_by_text(self, *args, **kwargs):
+            raise AssertionError("input visível não deve exigir clique em texto")
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    page = Page()
+    assert ensure_resume_uploaded(page, cv) == "uploaded"
+    assert page.file_input.value == str(cv)
+
+
 def test_fill_field_uses_select_option_for_selects() -> None:
     class Locator:
         def __init__(self) -> None:
