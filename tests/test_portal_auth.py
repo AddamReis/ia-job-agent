@@ -419,6 +419,23 @@ def test_google_oauth_stops_when_password_is_requested(
         agent._google_oauth_login(login, cfg, PORTAL_DOMAIN)
 
 
+def test_google_spanish_password_challenge_stops_agent() -> None:
+    class ChallengePage:
+        url = "https://accounts.google.com/v3/signin/challenge/pk?TL=123"
+
+    class TextPage:
+        url = "https://accounts.google.com/v3/signin/accountchooser"
+
+    with pytest.raises(HumanActionRequired, match="senha"):
+        BrowserApplyAgent._block_google_challenge(
+            ChallengePage(), "Selecciona una cuenta"
+        )
+    with pytest.raises(HumanActionRequired, match="senha"):
+        BrowserApplyAgent._block_google_challenge(
+            TextPage(), "Ingresa tu contraseña para continuar"
+        )
+
+
 def test_existing_application_is_recorded_without_approval(monkeypatch: pytest.MonkeyPatch) -> None:
     eventos: list[tuple[str, dict]] = []
     monkeypatch.setattr(

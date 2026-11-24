@@ -1150,6 +1150,29 @@ class BrowserApplyAgent:
             )
         return page
 
+    # O Google pode pedir senha em qualquer idioma; "/challenge/pk" é o
+    # desafio de senha, e "/challenge/mfa|2fa|sms|totp" os demais fatores.
+    _GOOGLE_CHALLENGE_URL = re.compile(
+        r"/challenge/(?:pk|mfa|2fa|sms|totp|reauth)", re.I
+    )
+    _GOOGLE_CHALLENGE_TEXT = (
+        "digite sua senha", "informe sua senha", "enter your password",
+        "type your password", "ingresa tu contraseña", "introduzca su contraseña",
+        "escribe tu contraseña", "verify it's you", "verifica tu identidad",
+    )
+
+    @classmethod
+    def _block_google_challenge(cls, page: Any, texto: str) -> None:
+        """Para antes de qualquer senha, MFA ou verificação do Google."""
+        url = str(page.url or "")
+        baixo = str(texto or "").lower()
+        if cls._GOOGLE_CHALLENGE_URL.search(url) or any(
+            sinal in baixo for sinal in cls._GOOGLE_CHALLENGE_TEXT
+        ):
+            raise HumanActionRequired(
+                "login", "Google pediu senha/verificação; agente não digita credencial"
+            )
+
     def _google_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
         """Completa OAuth Google reaproveitando a sessão do Chrome CDP.
 
@@ -1195,6 +1218,7 @@ class BrowserApplyAgent:
             domain=dominio,
             trecho=" ".join(texto[:240].split())[:240],
         )
+        self._block_google_challenge(google, texto)
         if any(
             sinal in baixo
             for sinal in (
@@ -1216,10 +1240,7 @@ class BrowserApplyAgent:
                     texto = str(google.evaluate("() => document.body.innerText") or "")
                 except Exception:
                     texto = ""
-                if any(sinal in texto.lower() for sinal in ("digite sua senha", "enter your password")):
-                    raise HumanActionRequired(
-                        "login", "Google pediu senha; agente não digita credencial"
-                    )
+                self._block_google_challenge(google, texto)
 
         clicou_continue = ""
         for rotulo in cfg.oauth_continue_labels:
