@@ -489,6 +489,15 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
         log_event("browser_apply_resume_already_attached", filename=name)
         return "already_attached"
 
+    # Portais paginados (Alignerr) exibem "Arquivo • Uploaded" em texto solto e
+    # removem o input de arquivo ao avançar. Reconhecer esse estado evita exigir
+    # um segundo upload em uma etapa que já não tem campo de arquivo.
+    if page.evaluate(_RESUME_ATTACHED_JS, name) and not page.evaluate(
+        _RESUME_UPLOADING_JS, name
+    ):
+        log_event("browser_apply_resume_already_attached", filename=name)
+        return "already_attached"
+
     if page.evaluate(_RESUME_CHECK_JS, name):
         if page.evaluate(_RESUME_SELECT_JS, name) and _resume_selected(page, name):
             log_event("browser_apply_resume_selected", filename=name)

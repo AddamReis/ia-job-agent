@@ -357,6 +357,26 @@ def test_ensure_resume_uploaded_skips_attached_resume(tmp_path) -> None:
     assert page.calls == 1
 
 
+def test_ensure_resume_uploaded_recognizes_filename_in_page_text(tmp_path) -> None:
+    cv = tmp_path / "cv-alignerr.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+
+    class Page:
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return True
+            if "uploading|upload in progress" in expression:
+                return False
+            raise AssertionError("não deve procurar input quando o texto já confirma o CV")
+
+        def locator(self, *args, **kwargs):
+            raise AssertionError("não deve reenviar um CV já confirmado na tela")
+
+    assert ensure_resume_uploaded(Page(), cv) == "already_attached"
+
+
 def test_ensure_resume_uploaded_uses_visible_file_input(tmp_path) -> None:
     cv = tmp_path / "cv-internacional.pdf"
     cv.write_bytes(b"%PDF-1.4")
@@ -446,8 +466,8 @@ def test_ensure_resume_uploaded_accepts_file_without_radio(tmp_path) -> None:
                 return False
             if "files:" in expression:
                 return {"blocked": False, "files": [[nome]], "radios": []}
-            if "querySelectorAll(" in expression:
-                return True
+            if "input, a, [aria-label], [title]" in expression:
+                return False
             return False
 
         def locator(self, selector):
@@ -490,8 +510,8 @@ def test_ensure_resume_uploaded_waits_for_upload_to_finish(tmp_path) -> None:
                 return {"blocked": False, "files": [[nome]], "radios": []}
             if "uploading|upload in progress" in expression:
                 return self.estado == "uploading"
-            if "querySelectorAll(" in expression:
-                return True
+            if "input, a, [aria-label], [title]" in expression:
+                return False
             return False
 
         def locator(self, selector):
