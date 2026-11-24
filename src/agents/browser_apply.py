@@ -34,6 +34,7 @@ from ..execution.web.form_dom import (
     is_experience_step,
     next_step_label,
     remove_extra_experience_entry,
+    resume_attached_on_page,
     snapshot_form,
     submission_state,
     visible_buttons,
@@ -1801,6 +1802,23 @@ class BrowserApplyAgent:
         """
         cv_path = self._cv_path()
         status = ensure_resume_uploaded(page, cv_path)
+        if status in {"upload_button_not_found", "file_input_not_found", "unverified"}:
+            # O upload pode ter ocorrido na aba anterior do mesmo fluxo
+            # (Alignerr: /upload-resume -> /profile). Nesse caso o step atual
+            # não tem mais input de arquivo, mas o CV está anexado ao cadastro.
+            for aba in list(getattr(getattr(page, "context", None), "pages", []) or []):
+                if aba is page:
+                    continue
+                try:
+                    if resume_attached_on_page(aba, cv_path):
+                        status = "already_attached"
+                        log_event(
+                            "browser_apply_resume_already_attached_in_other_tab",
+                            filename=Path(cv_path).name if cv_path else "",
+                        )
+                        break
+                except Exception:
+                    continue
         log_event(
             "browser_apply_resume",
             status=status,

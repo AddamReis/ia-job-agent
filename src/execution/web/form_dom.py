@@ -472,6 +472,21 @@ def _resume_selected(page: Any, name: str) -> bool:
     return bool(page.evaluate(_RESUME_SELECTED_JS, name))
 
 
+def resume_attached_on_page(page: Any, path: str | Path) -> bool:
+    """Indica se este page já mostra o CV anexado, sem fazer upload."""
+    if not path:
+        return False
+    name = Path(path).name
+    if page.evaluate(_RESUME_SELECTED_JS, name):
+        return True
+    if page.evaluate(_RESUME_ATTACHED_JS, name) and not page.evaluate(
+        _RESUME_UPLOADING_JS, name
+    ):
+        return True
+    state = page.evaluate(_RESUME_STATE_JS) or {}
+    return any(name in item for group in state.get("files", []) for item in group)
+
+
 def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
     """Garante que o CV desejado esteja anexado ao formulário.
 

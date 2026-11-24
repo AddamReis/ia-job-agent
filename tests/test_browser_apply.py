@@ -16,7 +16,12 @@ from src.core.errors import HumanActionRequired, ValidationError
 from src.core.state import JobStatus
 from src.execution.forms.answers import AnswerResolver
 from src.execution.forms.field import FormField
-from src.execution.web.form_dom import ensure_resume_uploaded, fill_field, submission_state
+from src.execution.web.form_dom import (
+    ensure_resume_uploaded,
+    fill_field,
+    resume_attached_on_page,
+    submission_state,
+)
 from src.execution.web.site_patterns import SitePatternStore
 from src.models.domain import ApprovalRequest, CandidateProfile, JobAnalysis, JobOpportunity
 from src.models.schemas import AnswerDecision, UiActionDecision
@@ -478,6 +483,82 @@ def test_ensure_resume_uploaded_accepts_file_without_radio(tmp_path) -> None:
             pass
 
     assert ensure_resume_uploaded(Page(), cv) == "uploaded"
+
+
+def test_resume_attached_on_page_reads_filename_from_body_text(tmp_path) -> None:
+    cv = tmp_path / "cv-alignerr.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+
+    class Page:
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return True
+            if "uploading|upload in progress" in expression:
+                return False
+            if "input[type=radio]" in expression:
+                return False
+            return {"blocked": False, "files": [], "radios": []}
+
+    assert resume_attached_on_page(Page(), cv) is True
+
+
+def test_handle_resume_accepts_upload_done_in_previous_tab(tmp_path) -> None:
+    cv = tmp_path / "cv-alignerr.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+
+    class Zero:
+        def count(self) -> int:
+            return 0
+
+    class CurrentPage:
+        def __init__(self, context) -> None:
+            self.context = context
+
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return False
+            if "uploading|upload in progress" in expression:
+                return False
+            if "input[type=radio]" in expression and "some" in expression:
+                return False
+            if "files:" in expression:
+                return {"blocked": False, "files": [], "radios": []}
+            return False
+
+        def locator(self, _selector):
+            return Zero()
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Zero()
+
+        def get_by_text(self, *_args, **_kwargs):
+            return Zero()
+
+    class UploadedTab:
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return True
+            if "uploading|upload in progress" in expression:
+                return False
+            return {"blocked": False, "files": [], "radios": []}
+
+    context = SimpleNamespace(pages=[])
+    page = CurrentPage(context)
+    context.pages = [page, UploadedTab()]
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    agent.profile = CandidateProfile(documents={"resume": str(cv)})
+
+    snapshot, status = agent._handle_resume(page, {"url": "https://x/profile", "text": ""})
+
+    assert status == "already_attached"
+    assert snapshot == {"url": "https://x/profile", "text": ""}
 
 
 def test_ensure_resume_uploaded_waits_for_upload_to_finish(tmp_path) -> None:
