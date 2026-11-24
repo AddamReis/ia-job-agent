@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from ..agents.qualification import (
     detect_currencies,
@@ -40,6 +40,7 @@ BUCKETS: tuple[tuple[str, str], ...] = (
 )
 BUCKET_KEYS = tuple(key for key, _ in BUCKETS)
 DEFAULT_BUCKET = BUCKETS[0][0]
+PAGE_SIZE = 10
 # Consumidores cuja falha representa erro de automação, não decisão humana.
 AUTOMATION_CONSUMERS = ("application", "apply_submit")
 
@@ -191,11 +192,25 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
     }
 
 
-def job_index(bucket: str = DEFAULT_BUCKET) -> dict[str, Any]:
+def job_index(
+    bucket: str = DEFAULT_BUCKET,
+    *,
+    query: str = "",
+    sort: str = "newer",
+    page: int = 1,
+    limit: int = PAGE_SIZE,
+) -> dict[str, Any]:
+    """Lista paginada: filtro de texto, bucket, ordem e LIMIT resolvidos no SQL."""
     settings = _settings()
-    min_score = settings.qualification.min_score
     repo = _repo()
-    jobs = repo.list_jobs(limit=5000)
+    result = repo.query_review_jobs(
+        bucket=bucket,
+        query=query,
+        sort=sort,
+        page=page,
+        limit=limit,
+        automation_consumers=AUTOMATION_CONSUMERS,
+    )
     approvals = {item.opportunity_id: item.status for item in repo.list_approvals()}
     errors: dict[str, str] = {}
     for event in repo.failed_agent_events(AUTOMATION_CONSUMERS):
@@ -205,26 +220,26 @@ def job_index(bucket: str = DEFAULT_BUCKET) -> dict[str, Any]:
     items = [
         _summary_job(
             job,
-            min_score,
+            settings.qualification.min_score,
             approval_status=approvals.get(job.id),
             automation_error=errors.get(job.id, ""),
         )
-        for job in jobs
+        for job in result["items"]
     ]
-    counts: dict[str, int] = {key: 0 for key in BUCKET_KEYS}
-    for item in items:
-        counts[item["bucket"]] += 1
-    counts["all"] = len(items)
-    if bucket not in BUCKET_KEYS:
-        bucket = DEFAULT_BUCKET
-    if bucket != "all":
-        items = [item for item in items if item["bucket"] == bucket]
     return {
-        "counts": counts,
+        "counts": result["counts"],
         "items": items,
-        "bucket": bucket,
+        "bucket": result["bucket"],
         "labels": dict(BUCKETS),
         "order": list(BUCKET_KEYS),
+        "query": result["query"],
+        "sort": result["sort"],
+        "page": result["page"],
+        "limit": result["limit"],
+        "total": result["total"],
+        "pages": result["pages"],
+        "has_prev": result["page"] > 1,
+        "has_next": result["page"] < result["pages"],
     }
 
 
@@ -279,15 +294,29 @@ class ReviewHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/summary":
             try:
-                self._json(job_index("all")["counts"])
+                self._json(job_index("all", limit=1)["counts"])
             except Exception as exc:  # pragma: no cover
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return
         if path == "/api/jobs":
-            bucket = urlparse(self.path).query.split("bucket=", 1)
-            bucket_value = bucket[1].split("&", 1)[0] if len(bucket) > 1 else DEFAULT_BUCKET
+            params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+
+            def first(key: str, default: str) -> str:
+                return (params.get(key) or [default])[0]
+
             try:
-                self._json(job_index(bucket_value))
+                page = max(1, int(first("page", "1")))
+            except ValueError:
+                page = 1
+            try:
+                self._json(
+                    job_index(
+                        first("bucket", DEFAULT_BUCKET),
+                        query=first("q", ""),
+                        sort=first("sort", "newer"),
+                        page=page,
+                    )
+                )
             except Exception as exc:  # pragma: no cover
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
             return

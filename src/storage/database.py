@@ -13,12 +13,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import (
+    JSON,
     Boolean,
     Integer,
     String,
     Text,
+    and_,
+    cast,
     create_engine,
+    exists,
+    func,
     inspect,
+    or_,
     select,
     text,
     update,
@@ -533,6 +539,122 @@ class Repository:
                 JobOpportunity.model_validate(json.loads(row.data))
                 for row in session.scalars(stmt).all()
             ]
+
+    def query_review_jobs(
+        self,
+        *,
+        bucket: str = "approval",
+        query: str = "",
+        sort: str = "newer",
+        page: int = 1,
+        limit: int = 10,
+        automation_consumers: tuple[str, ...] = ("application", "apply_submit"),
+    ) -> dict[str, Any]:
+        """Consulta da PWA inteiramente no banco: texto, bucket, ordem e página.
+
+        A paginação acontece antes da desserialização, então a quantidade de
+        vagas carregadas na memória cresce com ``limit``, nunca com o total do
+        banco. Os contadores são ``COUNT`` separados com o mesmo filtro de
+        texto, o que mantém os números das abas coerentes com a busca.
+        """
+        buckets = ("approval", "submitted", "rejected", "errors", "all")
+        bucket = bucket if bucket in buckets else "approval"
+        sort = "older" if sort == "older" else "newer"
+        page = max(1, int(page))
+        limit = max(1, min(int(limit), 100))
+
+        conditions: list[Any] = []
+        term = " ".join((query or "").split())
+        if term:
+            # Busca literal: % e _ digitados pelo usuário não viram curinga.
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            # ``data`` contém descrição, resumo da análise, motivos e skills.
+            conditions.append(
+                or_(
+                    JobRow.title.ilike(like, escape="\\"),
+                    JobRow.company.ilike(like, escape="\\"),
+                    JobRow.location.ilike(like, escape="\\"),
+                    JobRow.data.ilike(like, escape="\\"),
+                )
+            )
+
+        failed_event = exists().where(
+            AgentEventRow.job_id == JobRow.id,
+            AgentEventRow.status == "FAILED",
+            AgentEventRow.consumer.in_(automation_consumers),
+        )
+        error_cond = or_(JobRow.status == JobStatus.FAILED.value, failed_event)
+        sent_cond = or_(
+            JobRow.status == JobStatus.SUBMITTED.value,
+            JobRow.has_applied.is_(True),
+        )
+        # ``data`` é Text, mas o JSON é válido. Cada dialeto extrai o caminho
+        # de um jeito diferente; o COALESCE evita NULL (SQL de 3 valores) e
+        # mantém a regra idêntica à de review_app._bucket.
+        if self.engine.dialect.name == "sqlite":
+            decision = func.coalesce(
+                func.json_extract(JobRow.data, "$.qualification.decision"), ""
+            )
+        else:
+            decision = func.coalesce(
+                cast(JobRow.data, JSON)["qualification", "decision"].as_string(), ""
+            )
+        rejected_cond = or_(
+            JobRow.status.in_(
+                [JobStatus.REJECTED_BY_FILTER.value, JobStatus.EXPIRED.value]
+            ),
+            decision.in_(["SKIP", "REJECT"]),
+        )
+
+        def bucket_condition(key: str) -> Any | None:
+            # Mesma precedência de review_app._bucket: erro → enviado → recusado.
+            if key == "errors":
+                return error_cond
+            if key == "submitted":
+                return and_(~error_cond, sent_cond)
+            if key == "rejected":
+                return and_(~error_cond, ~sent_cond, rejected_cond)
+            if key == "approval":
+                return and_(~error_cond, ~sent_cond, ~rejected_cond)
+            return None
+
+        def count_for(key: str) -> int:
+            stmt = select(func.count()).select_from(JobRow).where(*conditions)
+            condition = bucket_condition(key)
+            if condition is not None:
+                stmt = stmt.where(condition)
+            with self.session() as session:
+                return int(session.scalar(stmt) or 0)
+
+        counts = {key: count_for(key) for key in buckets}
+        counts["all"] = count_for("all")
+        total = counts[bucket]
+        pages = (total + limit - 1) // limit
+
+        stmt = select(JobRow).where(*conditions)
+        condition = bucket_condition(bucket)
+        if condition is not None:
+            stmt = stmt.where(condition)
+        order = JobRow.created_at.asc() if sort == "older" else JobRow.created_at.desc()
+        stmt = stmt.order_by(order, JobRow.id).limit(limit).offset((page - 1) * limit)
+        with self.session() as session:
+            jobs = [
+                JobOpportunity.model_validate(json.loads(row.data))
+                for row in session.scalars(stmt).all()
+            ]
+
+        return {
+            "items": jobs,
+            "counts": counts,
+            "bucket": bucket,
+            "query": term,
+            "sort": sort,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": pages,
+        }
 
     # ---- empresas ----
     @staticmethod

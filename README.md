@@ -119,6 +119,13 @@ humano), **Enviados** (automação concluída), **Recusado**, **Erros** (falha d
 **Todas** (última opção, apenas filtro). Erros têm precedência sobre enviado; enviado tem
 precedência sobre recusado. Os contadores de cada lista aparecem nas opções.
 
+A busca textual ao lado do dropdown filtra título, empresa, local, descrição, resumo da análise,
+motivos e skills — tudo no banco, via `ILIKE` sobre a coluna JSON `data`. A paginação é fixa em
+**10 vagas por página** (`LIMIT/OFFSET` no SQL) e a ordenação usa a hora de inclusão
+(`created_at`): **Mais recentes** (`newer`, padrão) ou **Mais antigos** (`older`). Os contadores
+das abas acompanham o texto digitado. A API correspondente é
+`GET /api/jobs?bucket=&q=&sort=&page=`; `sort` aceita `newer`/`older` e `page` começa em 1.
+
 - **Playwright + Chrome real**: fonte padrão de descoberta. Lê o `ItemList` em JSON-LD da busca
   pública (ID real da vaga, título, empresa, local) e a descrição da página `jobs/view/<id>`.
   Sem login, sem API privada, sem UA falso e sem evasão. Ritmo conservador (`delay_ms: 1200`).

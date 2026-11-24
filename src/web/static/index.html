@@ -28,9 +28,21 @@
       <option value="errors">Erros</option>
       <option value="all">Todas</option>
     </select>
+    <input id="search" type="search" aria-label="Buscar no texto das vagas"
+           placeholder="Buscar: título, empresa, descrição, análise…" autocomplete="off">
+    <select id="sort" aria-label="Ordenar pela hora de inclusão">
+      <option value="newer" selected>Mais recentes</option>
+      <option value="older">Mais antigos</option>
+    </select>
   </div>
 
   <main id="list" class="list" aria-live="polite"></main>
+
+  <nav class="pager" aria-label="Paginação">
+    <button id="prev" class="page-btn" type="button">← Anterior</button>
+    <span id="page-info">—</span>
+    <button id="next" class="page-btn" type="button">Próxima →</button>
+  </nav>
 
   <div id="sheet" class="sheet" hidden>
     <div class="sheet-backdrop" data-close></div>

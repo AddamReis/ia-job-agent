@@ -1,5 +1,8 @@
-"""Pastas da PWA: ordem, contadores e precedência de erros de automação."""
+"""Pastas, busca, ordenação e paginação da PWA."""
 from __future__ import annotations
+
+import json
+from datetime import datetime
 
 import pytest
 
@@ -9,13 +12,57 @@ from src.models.domain import ApprovalRequest, JobOpportunity
 
 
 class StubRepo:
+    """ Espelho em memória da consulta paginada, para testar a camada HTTP. """
+
     def __init__(self, jobs, approvals=(), errors=()) -> None:
         self.jobs = {job.id: job for job in jobs}
         self.approvals = list(approvals)
         self.errors = list(errors)
 
-    def list_jobs(self, limit: int = 5000):
-        return list(self.jobs.values())[:limit]
+    def _bucket(self, job):
+        failed = [
+            event for event in self.failed_agent_events(review.AUTOMATION_CONSUMERS)
+            if event["job_id"] == job.id
+        ]
+        return review._bucket(
+            job,
+            70,
+            automation_error=failed[0]["error"] if failed else "",
+        )
+
+    def query_review_jobs(
+        self, *, bucket="approval", query="", sort="newer", page=1, limit=10,
+        automation_consumers=(),
+    ):
+        term = " ".join((query or "").split()).lower()
+        jobs = list(self.jobs.values())
+        if term:
+            jobs = [
+                job for job in jobs
+                if term in json.dumps(job.model_dump(mode="json"), ensure_ascii=False).lower()
+            ]
+        counts = {key: 0 for key in review.BUCKET_KEYS}
+        for job in jobs:
+            counts[self._bucket(job)] += 1
+        counts["all"] = len(jobs)
+        if bucket not in review.BUCKET_KEYS:
+            bucket = "approval"
+        jobs = [job for job in jobs if self._bucket(job) == bucket]
+        jobs.sort(key=lambda job: job.created_at, reverse=sort != "older")
+        total = len(jobs)
+        pages = (total + limit - 1) // limit
+        page = max(1, page)
+        return {
+            "items": jobs[(page - 1) * limit:page * limit],
+            "counts": counts,
+            "bucket": bucket,
+            "query": term,
+            "sort": "older" if sort == "older" else "newer",
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": pages,
+        }
 
     def list_approvals(self):
         return list(self.approvals)
@@ -40,15 +87,24 @@ class StubRepo:
         return None
 
 
-def _job(job_id: str, status: JobStatus, *, has_applied: bool = False) -> JobOpportunity:
+def _job(
+    job_id: str,
+    status: JobStatus,
+    *,
+    has_applied: bool = False,
+    created_at: str = "2026-11-23T10:00:00",
+    title: str | None = None,
+    description: str = "100% remote .NET role",
+) -> JobOpportunity:
     return JobOpportunity(
         id=job_id,
         company="Acme",
-        title=f"Vaga {job_id}",
+        title=title or f"Vaga {job_id}",
         location="Remote",
-        description="100% remote .NET role",
+        description=description,
         status=status,
         has_applied=has_applied,
+        created_at=datetime.fromisoformat(created_at),
     )
 
 
@@ -126,11 +182,40 @@ def test_detail_reports_automation_error(monkeypatch: pytest.MonkeyPatch) -> Non
     assert detail["can_check"] is False
 
 
+def test_pagination_sort_and_text_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = [
+        _job(f"vaga-{i}", JobStatus.QUALIFIED,
+             created_at=f"2026-11-23T10:{i:02d}:00",
+             title=f"Analyzer {i}" if i % 2 else f"Developer {i}")
+        for i in range(12)
+    ]
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo(jobs))
+
+    first = review.job_index("approval", query="developer", sort="newer", page=1)
+    second = review.job_index("approval", query="developer", sort="newer", page=2)
+
+    assert first["limit"] == 10
+    assert first["total"] == 6
+    assert first["pages"] == 1
+    assert [item["id"] for item in first["items"]] == [
+        "vaga-10", "vaga-8", "vaga-6", "vaga-4", "vaga-2", "vaga-0"
+    ]
+    assert second["items"] == []
+    assert second["has_prev"] is True
+
+    paged = review.job_index("approval", sort="older", page=2, limit=5)
+    assert [item["id"] for item in paged["items"]] == [
+        "vaga-5", "vaga-6", "vaga-7", "vaga-8", "vaga-9"
+    ]
+    assert paged["has_next"] is True
+    assert paged["counts"]["all"] == 12
+
+
 def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v2'" in source
+    assert "const CACHE = 'review-pwa-v3'" in source
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at

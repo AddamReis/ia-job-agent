@@ -6,7 +6,16 @@ const BUCKETS = [
   ['all', 'Todas'],
 ];
 
-const state = { bucket: 'approval', items: [], counts: {} };
+const state = {
+  bucket: 'approval',
+  q: '',
+  sort: 'newer',
+  page: 1,
+  items: [],
+  counts: {},
+  total: 0,
+  pages: 0,
+};
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -38,15 +47,41 @@ async function load() {
   const list = $('#list');
   list.replaceChildren(el('div', 'empty', 'Carregando…'));
   try {
-    const data = await api(`/api/jobs?bucket=${encodeURIComponent(state.bucket)}`);
+    const params = new URLSearchParams({
+      bucket: state.bucket,
+      q: state.q,
+      sort: state.sort,
+      page: String(state.page),
+    });
+    const data = await api(`/api/jobs?${params}`);
     state.items = data.items || [];
     state.counts = data.counts || {};
+    state.total = data.total || 0;
+    state.pages = data.pages || 0;
+    state.page = data.page || 1;
     renderCounts();
     renderList();
+    renderPager();
     $('#subtitle').textContent = `Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
   } catch (err) {
     list.replaceChildren(el('div', 'empty', `Erro: ${err.message}`));
+    renderPager();
   }
+}
+
+function renderPager() {
+  const info = $('#page-info');
+  const prev = $('#prev');
+  const next = $('#next');
+  if (!state.pages) {
+    info.textContent = '—';
+    prev.disabled = true;
+    next.disabled = true;
+    return;
+  }
+  info.textContent = `Página ${state.page} de ${state.pages} · ${state.total} ${state.total === 1 ? 'vaga' : 'vagas'}`;
+  prev.disabled = state.page <= 1;
+  next.disabled = state.page >= state.pages;
 }
 
 function renderCounts() {
@@ -225,9 +260,40 @@ function toast(message) {
   toastTimer = setTimeout(() => { node.hidden = true; }, 4200);
 }
 
+function reloadFromStart() {
+  state.page = 1;
+  load();
+}
+
 $('#bucket').addEventListener('change', (ev) => {
   state.bucket = ev.target.value;
-  load();
+  reloadFromStart();
+});
+
+let searchTimer;
+$('#search').addEventListener('input', (ev) => {
+  state.q = ev.target.value.trim();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(reloadFromStart, 300);
+});
+
+$('#sort').addEventListener('change', (ev) => {
+  state.sort = ev.target.value;
+  reloadFromStart();
+});
+
+$('#prev').addEventListener('click', () => {
+  if (state.page > 1) {
+    state.page -= 1;
+    load();
+  }
+});
+
+$('#next').addEventListener('click', () => {
+  if (state.page < state.pages) {
+    state.page += 1;
+    load();
+  }
 });
 
 $('#refresh').addEventListener('click', load);

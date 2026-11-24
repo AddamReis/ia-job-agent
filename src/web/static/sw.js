@@ -1,4 +1,4 @@
-const CACHE = 'review-pwa-v2';
+const CACHE = 'review-pwa-v3';
 const SHELL = ['/', '/app.js', '/styles.css', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
