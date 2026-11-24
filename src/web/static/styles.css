@@ -47,10 +47,10 @@ body {
   cursor: pointer;
 }
 
-.tabs {
+.filter {
   display: flex;
-  gap: 6px;
-  overflow-x: auto;
+  align-items: center;
+  gap: 10px;
   padding: 6px 16px 12px;
   position: sticky;
   top: 70px;
@@ -58,25 +58,18 @@ body {
   z-index: 4;
 }
 
-.tab {
-  white-space: nowrap;
+.filter label { color: var(--muted); font-size: 13px; }
+.filter select {
+  flex: 1;
+  min-width: 0;
   background: var(--panel);
-  color: var(--muted);
+  color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 9px 13px;
-  font-size: 13px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-}
-
-.tab.active { color: #fff; border-color: var(--blue); background: #1c3357; }
-.badge {
-  display: inline-block;
-  margin-left: 5px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(255,255,255,.08);
-  font-size: 11px;
 }
 
 .list { padding: 4px 12px 28px; display: grid; gap: 10px; }
@@ -94,6 +87,7 @@ body {
 .company { color: var(--blue); font-size: 13px; font-weight: 600; }
 .meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .reason { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.reason.error { color: var(--red); }
 
 .pill {
   display: inline-block;

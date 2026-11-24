@@ -1,4 +1,12 @@
-const state = { bucket: 'pending', items: [], counts: {} };
+const BUCKETS = [
+  ['approval', 'Aguardando Aprovação'],
+  ['submitted', 'Enviados'],
+  ['rejected', 'Recusado'],
+  ['errors', 'Erros'],
+  ['all', 'Todas'],
+];
+
+const state = { bucket: 'approval', items: [], counts: {} };
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -42,10 +50,17 @@ async function load() {
 }
 
 function renderCounts() {
-  for (const key of ['pending', 'rejected', 'approved', 'all']) {
-    const node = $(`#count-${key}`);
-    if (node) node.textContent = state.counts[key] ?? 0;
+  for (const [key, label] of BUCKETS) {
+    const option = $(`#bucket option[value="${key}"]`);
+    if (option) option.textContent = `${label} (${state.counts[key] ?? 0})`;
   }
+}
+
+function statusKind(status) {
+  if (status === 'SUBMITTED') return 'ok';
+  if (status === 'FAILED') return 'no';
+  if (['QUALIFIED', 'PENDING_APPROVAL', 'APPLYING', 'WAITING_DEVICE', 'REQUIRES_HUMAN_ACTION'].includes(status)) return 'warn';
+  return 'info';
 }
 
 function renderList() {
@@ -60,6 +75,7 @@ function renderList() {
     card.append(el('div', 'company', job.company || 'Empresa não informada'));
     card.append(el('h2', null, job.title || 'Sem título'));
     const meta = el('div', 'meta');
+    meta.append(pill(job.status || '—', statusKind(job.status)));
     meta.append(pill(`Score ${job.score ?? '—'}`, job.score >= 70 ? 'ok' : 'warn'));
     meta.append(pill(job.decision || 'SEM DECISÃO', job.decision === 'APPLY' ? 'ok' : 'warn'));
     meta.append(document.createTextNode(`${job.location || '—'} · ${fmtDate(job.posted_at)}`));
@@ -124,7 +140,11 @@ function renderDetail(data) {
     ['Local', job.location_normalized || job.location],
     ['Publicada', fmtDate(job.posted_at)],
     ['Moeda', job.currency || job.currency_signal || 'não informada'],
+    ['Aprovação', data.approval ? data.approval.status : 'sem solicitação'],
   ]));
+  if (data.automation_error) {
+    root.append(el('p', 'reason error', `Erro da automação: ${data.automation_error}`));
+  }
 
   root.append(section('Verificações'));
   const checks = el('div', 'checks');
@@ -205,13 +225,9 @@ function toast(message) {
   toastTimer = setTimeout(() => { node.hidden = true; }, 4200);
 }
 
-document.querySelectorAll('.tab').forEach((tab) => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-    tab.classList.add('active');
-    state.bucket = tab.dataset.bucket;
-    load();
-  });
+$('#bucket').addEventListener('change', (ev) => {
+  state.bucket = ev.target.value;
+  load();
 });
 
 $('#refresh').addEventListener('click', load);

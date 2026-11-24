@@ -19,12 +19,16 @@
     <button id="refresh" class="icon-btn" title="Atualizar" aria-label="Atualizar">↻</button>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button class="tab active" data-bucket="pending" role="tab">A classificar <span class="badge" id="count-pending">0</span></button>
-    <button class="tab" data-bucket="rejected" role="tab">Recusadas <span class="badge" id="count-rejected">0</span></button>
-    <button class="tab" data-bucket="approved" role="tab">Aprovadas <span class="badge" id="count-approved">0</span></button>
-    <button class="tab" data-bucket="all" role="tab">Todas <span class="badge" id="count-all">0</span></button>
-  </nav>
+  <div class="filter">
+    <label for="bucket">Lista</label>
+    <select id="bucket" aria-label="Filtrar vagas">
+      <option value="approval" selected>Aguardando Aprovação</option>
+      <option value="submitted">Enviados</option>
+      <option value="rejected">Recusado</option>
+      <option value="errors">Erros</option>
+      <option value="all">Todas</option>
+    </select>
+  </div>
 
   <main id="list" class="list" aria-live="polite"></main>
 

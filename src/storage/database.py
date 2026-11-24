@@ -1217,6 +1217,35 @@ class Repository:
             ).all()
             return [ApprovalRequest.model_validate(json.loads(row.data)) for row in rows]
 
+    def list_approvals(self) -> list[ApprovalRequest]:
+        """Todas as aprovações, para classes rápidas sem N+1 consultas."""
+        with self.session() as session:
+            rows = session.scalars(select(ApprovalRow)).all()
+            return [ApprovalRequest.model_validate(json.loads(row.data)) for row in rows]
+
+    def failed_agent_events(
+        self,
+        consumers: tuple[str, ...] | None = None,
+        job_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Eventos de automação encerrados com FAILED (com o motivo do erro)."""
+        stmt = select(AgentEventRow).where(AgentEventRow.status == "FAILED")
+        if consumers:
+            stmt = stmt.where(AgentEventRow.consumer.in_(consumers))
+        if job_id:
+            stmt = stmt.where(AgentEventRow.job_id == job_id)
+        with self.session() as session:
+            return [
+                {
+                    "job_id": row.job_id,
+                    "consumer": row.consumer,
+                    "event_type": row.event_type,
+                    "error": row.error,
+                    "updated_at": row.updated_at,
+                }
+                for row in session.scalars(stmt.order_by(AgentEventRow.updated_at.desc())).all()
+            ]
+
     def get_approval_for_job(self, opportunity_id: str) -> ApprovalRequest | None:
         """Última aprovação registrada para uma vaga (a mais recente primeiro)."""
         with self.session() as session:

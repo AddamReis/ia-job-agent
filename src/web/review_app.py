@@ -30,6 +30,19 @@ from ..storage.database import Repository
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_CURRENCIES = {"USD", "EUR"}
 
+# Ordem fixa da interface. ``all`` é apenas filtro, nunca classificação de vaga.
+BUCKETS: tuple[tuple[str, str], ...] = (
+    ("approval", "Aguardando Aprovação"),
+    ("submitted", "Enviados"),
+    ("rejected", "Recusado"),
+    ("errors", "Erros"),
+    ("all", "Todas"),
+)
+BUCKET_KEYS = tuple(key for key, _ in BUCKETS)
+DEFAULT_BUCKET = BUCKETS[0][0]
+# Consumidores cuja falha representa erro de automação, não decisão humana.
+AUTOMATION_CONSUMERS = ("application", "apply_submit")
+
 
 def _settings() -> Settings:
     return Settings.load()
@@ -49,28 +62,48 @@ def _serialize(value: Any) -> Any:
     return value
 
 
-def _bucket(job: JobOpportunity, min_score: int) -> str:
-    qualification = job.qualification
-    if job.status in {JobStatus.SUBMITTED, JobStatus.APPLYING, JobStatus.PENDING_APPROVAL}:
-        return "approved"
-    if qualification and qualification.decision == "APPLY" and (job.score or 0) >= min_score:
-        return "approved"
-    if (
-        (qualification and qualification.decision == "SKIP")
-        or job.status
-        in {
-            JobStatus.REJECTED_BY_FILTER,
-            JobStatus.EXPIRED,
-            JobStatus.FAILED,
-            JobStatus.REQUIRES_HUMAN_ACTION,
-        }
+def _bucket(
+    job: JobOpportunity,
+    min_score: int,
+    *,
+    approval_status: str | None = None,
+    automation_error: str = "",
+) -> str:
+    """Classifica a vaga em uma das pastas da plataforma intermediária.
+
+    A ordem de precedência é erro → enviado → recusado → aguardando aprovação.
+    ``min_score`` permanece no contrato por compatibilidade; a reclassificação
+    determinística já grava o status ``REJECTED_BY_FILTER`` quando o score baixa.
+    """
+    del min_score, approval_status
+    if automation_error or job.status == JobStatus.FAILED:
+        return "errors"
+    if job.status == JobStatus.SUBMITTED or job.has_applied:
+        return "submitted"
+    if job.status in {JobStatus.REJECTED_BY_FILTER, JobStatus.EXPIRED} or (
+        job.qualification is not None and job.qualification.decision in {"SKIP", "REJECT"}
     ):
         return "rejected"
-    return "pending"
+    # Inclui QUALIFIED/PENDING_APPROVAL (dependem do check), WAITING_DEVICE e
+    # REQUIRES_HUMAN_ACTION (dependem de ação humana) e APPLYING (em andamento).
+    return "approval"
 
 
-def _summary_job(job: JobOpportunity, min_score: int) -> dict[str, Any]:
+def _summary_job(
+    job: JobOpportunity,
+    min_score: int,
+    *,
+    approval_status: str | None = None,
+    automation_error: str = "",
+) -> dict[str, Any]:
     qualification = job.qualification
+    reason = (
+        qualification.reasons[0]
+        if qualification and qualification.reasons
+        else (qualification.hard_reject_reason if qualification else "ainda não classificada")
+    )
+    if automation_error:
+        reason = f"Erro: {automation_error}"
     return {
         "id": job.id,
         "company": job.company,
@@ -79,14 +112,17 @@ def _summary_job(job: JobOpportunity, min_score: int) -> dict[str, Any]:
         "score": job.score,
         "decision": qualification.decision if qualification else None,
         "hard_reject_reason": qualification.hard_reject_reason if qualification else None,
-        "reason": (
-            qualification.reasons[0]
-            if qualification and qualification.reasons
-            else (qualification.hard_reject_reason if qualification else "ainda não classificada")
-        ),
+        "reason": reason,
         "status": job.status.value,
+        "approval_status": approval_status,
+        "error": automation_error or None,
         "posted_at": job.posted_at.isoformat() if job.posted_at else None,
-        "bucket": _bucket(job, min_score),
+        "bucket": _bucket(
+            job,
+            min_score,
+            approval_status=approval_status,
+            automation_error=automation_error,
+        ),
     }
 
 
@@ -137,30 +173,59 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
         return None
     approval = repo.get_approval_for_job(job.id)
     decision = repo.get_review_decision_for_job(job.id)
+    erros = repo.failed_agent_events(AUTOMATION_CONSUMERS, job_id=job.id)
+    automation_error = erros[0]["error"] or erros[0]["event_type"] if erros else ""
     return {
         "job": _serialize(job),
-        "bucket": _bucket(job, _settings().qualification.min_score),
+        "bucket": _bucket(
+            job,
+            _settings().qualification.min_score,
+            approval_status=approval.status if approval else None,
+            automation_error=automation_error,
+        ),
         "checks": compute_checks(job),
         "approval": _serialize(approval) if approval else None,
         "review_decision": decision,
+        "automation_error": automation_error or None,
         "can_check": bool(approval and approval.status == "PENDING"),
     }
 
 
-def job_index(bucket: str = "all") -> dict[str, Any]:
+def job_index(bucket: str = DEFAULT_BUCKET) -> dict[str, Any]:
     settings = _settings()
     min_score = settings.qualification.min_score
-    jobs = _repo().list_jobs(limit=5000)
-    items = [_summary_job(job, min_score) for job in jobs]
-    counts = {
-        "pending": sum(i["bucket"] == "pending" for i in items),
-        "rejected": sum(i["bucket"] == "rejected" for i in items),
-        "approved": sum(i["bucket"] == "approved" for i in items),
-        "all": len(items),
-    }
+    repo = _repo()
+    jobs = repo.list_jobs(limit=5000)
+    approvals = {item.opportunity_id: item.status for item in repo.list_approvals()}
+    errors: dict[str, str] = {}
+    for event in repo.failed_agent_events(AUTOMATION_CONSUMERS):
+        errors.setdefault(
+            event["job_id"], event["error"] or event["event_type"] or "falha na automação"
+        )
+    items = [
+        _summary_job(
+            job,
+            min_score,
+            approval_status=approvals.get(job.id),
+            automation_error=errors.get(job.id, ""),
+        )
+        for job in jobs
+    ]
+    counts: dict[str, int] = {key: 0 for key in BUCKET_KEYS}
+    for item in items:
+        counts[item["bucket"]] += 1
+    counts["all"] = len(items)
+    if bucket not in BUCKET_KEYS:
+        bucket = DEFAULT_BUCKET
     if bucket != "all":
-        items = [i for i in items if i["bucket"] == bucket]
-    return {"counts": counts, "items": items, "bucket": bucket}
+        items = [item for item in items if item["bucket"] == bucket]
+    return {
+        "counts": counts,
+        "items": items,
+        "bucket": bucket,
+        "labels": dict(BUCKETS),
+        "order": list(BUCKET_KEYS),
+    }
 
 
 class ReviewHandler(BaseHTTPRequestHandler):
@@ -220,7 +285,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/jobs":
             bucket = urlparse(self.path).query.split("bucket=", 1)
-            bucket_value = bucket[1].split("&", 1)[0] if len(bucket) > 1 else "all"
+            bucket_value = bucket[1].split("&", 1)[0] if len(bucket) > 1 else DEFAULT_BUCKET
             try:
                 self._json(job_index(bucket_value))
             except Exception as exc:  # pragma: no cover

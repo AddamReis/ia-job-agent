@@ -114,6 +114,10 @@ $env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jo
 
 A PWA de revisão roda na DGX e é publicada somente na tailnet em
 `https://dgx-spark.tail040a06.ts.net/` (Tailscale Serve → `127.0.0.1:8765`).
+O dropdown de listas segue esta ordem: **Aguardando Aprovação** (padrão; depende do check
+humano), **Enviados** (automação concluída), **Recusado**, **Erros** (falha de automação) e
+**Todas** (última opção, apenas filtro). Erros têm precedência sobre enviado; enviado tem
+precedência sobre recusado. Os contadores de cada lista aparecem nas opções.
 
 - **Playwright + Chrome real**: fonte padrão de descoberta. Lê o `ItemList` em JSON-LD da busca
   pública (ID real da vaga, título, empresa, local) e a descrição da página `jobs/view/<id>`.
