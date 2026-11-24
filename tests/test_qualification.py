@@ -370,6 +370,17 @@ def test_unknown_currency_rejects_but_missing_salary_is_neutral():
 def test_remote_detection_rejects_hybrid_marker():
     assert is_remote_location("Brazil (Remote)")
     assert not is_remote_location("São Paulo, SP (Hybrid)")
+    assert is_remote_location(
+        "Suécia - Stockholm", "Software Engineer", "Fully remote and flexible."
+    )
+    assert not is_remote_location(
+        "Töging am Inn", "Full-Stack Developer - 80% Remote", ""
+    )
+    assert not is_remote_location(
+        "Canadá",
+        "Architect",
+        "Whether it's the office, your home, or a blend of both. Remote-first.",
+    )
 
 
 def test_posting_older_than_four_days_is_rejected():
@@ -594,6 +605,12 @@ def test_public_api_remote_filter():
     assert not is_remote_public("Engineer", "Brazil", "")
     assert is_remote_public(
         "Engineer", "United States", "100% remote. Hybrid cloud experience."
+    )
+    assert not is_remote_public(
+        "Full-Stack Developer", "Germany", "80% Remote"
+    )
+    assert not is_remote_public(
+        "Architect", "Canada", "the office, your home, or a blend of both. Remote-first."
     )
 
 

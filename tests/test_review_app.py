@@ -267,6 +267,20 @@ def test_service_worker_is_network_first_and_versioned() -> None:
     assert "pathname.startsWith('/api/')" in source
 
 
+def test_remote_check_reads_description_and_blocks_partial() -> None:
+    job = _job("desc", JobStatus.QUALIFIED, title="Software Engineer")
+    job.location = "Stockholm"
+    job.location_normalized = "Suécia - Stockholm"
+    job.description = "Fully remote and flexible."
+    assert review.compute_checks(job)["remote"]["ok"] is True
+
+    job.description = "Full-Stack Developer - 80% Remote."
+    assert review.compute_checks(job)["remote"]["ok"] is False
+
+    job.description = "the office, your home, or a blend of both. Remote-first."
+    assert review.compute_checks(job)["remote"]["ok"] is False
+
+
 class ActionRepo:
     """Repo mínimo para o clique único da PWA."""
 

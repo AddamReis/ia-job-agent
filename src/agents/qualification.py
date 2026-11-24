@@ -29,6 +29,7 @@ from ..models.domain import (
     QualificationResult,
 )
 from ..models.schemas import ExtractedJobFacts, JobFitAssessment
+from ..shared.remote import is_remote_text
 from ..shared.stack_filter import (
     is_ai_focused,
     mentions_ai,
@@ -39,19 +40,6 @@ from ..shared.stack_filter import (
 from ..execution.web.linkedin_public import is_remote_public
 from ..storage.database import Repository
 
-_REMOTE_RE = re.compile(
-    r"\b(remote|remoto|work from home|wfh|anywhere|distributed|telecommut|teletrabalho)\b",
-    re.IGNORECASE,
-)
-_ONSITE_RE = re.compile(
-    r"\b(hybrid|h[íi]brido|on-?site|presencial|in office|office based)\b",
-    re.IGNORECASE,
-)
-# Usos técnicos de "hybrid" (hybrid cloud, hybrid app) NÃO são modelo de trabalho.
-_TECH_HYBRID_RE = re.compile(
-    r"\bhybrid\s+(?:cloud|app|mobile|application|framework|integration|database)\b",
-    re.IGNORECASE,
-)
 _CURRENCY_PATTERNS = {
     "USD": re.compile(r"(?<!r)\bUSD\b|US\s*\$|(?<![rR])\$", re.IGNORECASE),
     "EUR": re.compile(r"\bEUR\b|€|euros?", re.IGNORECASE),
@@ -75,17 +63,14 @@ def explicit_currency_codes(*values: str | None) -> set[str]:
     return codes
 
 
-def is_remote_location(location: str, title: str = "") -> bool:
-    """Só considera 100% remoto; híbrido/presencial nunca passa.
+def is_remote_location(location: str, title: str = "", description: str = "") -> bool:
+    """Só considera 100% remoto em card/descrição; híbrido/presencial nunca passa.
 
-    "Hybrid cloud" é tecnologia e não veto: usa a mesma limpeza da validação
-    pública para não descartar vagas remotas falsamente.
+    A descrição participa da checagem porque muitos cards anunciam apenas a
+    cidade, mas o texto diz "fully remote". Remoto parcial (por exemplo
+    "80% Remote") e "blend of both" são vetados pela mesma regra da descoberta.
     """
-    text = f"{location} {title}"
-    cleaned = _TECH_HYBRID_RE.sub(" ", text)
-    if _ONSITE_RE.search(cleaned):
-        return False
-    return bool(_REMOTE_RE.search(cleaned))
+    return is_remote_text(location, title, description)
 
 
 def detect_currencies(text: str) -> set[str]:
@@ -618,7 +603,9 @@ class JobQualificationAgent:
         remote_public = is_remote_public(
             job.title, job.location, job.description or ""
         )
-        remote_by_location = is_remote_location(job.location, job.title)
+        remote_by_location = is_remote_location(
+            job.location, job.title, job.description or ""
+        )
         remote_ok = remote_public and (
             facts.is_remote is True or (
                 facts.is_remote is None and remote_by_location

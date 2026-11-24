@@ -66,6 +66,8 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
 [DGX] review-serve (PWA via Tailscale Serve)
   → listas: a classificar / recusadas / aprovadas
   → check do operador: revalida remoto, moeda, recência e score
+      → o recheck remoto lê título, local e descrição; "80% Remote" e
+        "office/home/blend of both" são vetados antes da autorização e no submit
       → ReviewDecisionRow + resolve_approval(APPROVED)
       → publish_agent_event("apply_submit", "review.approved", job_id)
 

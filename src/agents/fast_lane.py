@@ -77,11 +77,6 @@ _ROLE_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-_REMOTE_DESCRIPTION_RE = re.compile(
-    r"100\s*%\s*(?:remote|remoto)|fully\s+remote|trabalho\s+remoto|trabajo\s+remoto",
-    re.I,
-)
-
 # Apenas a identidade do idioma importa. Nível (fluent, C1, native) não é lido.
 _FOREIGN_LANGUAGE_RE = re.compile(
     r"\b(?:french|français|german|deutsch|mandarin|chinese|japanese|korean|"
@@ -197,9 +192,7 @@ class FastLaneAgent:
 
         # 3) Remoto — híbrido/presencial nunca passa.
         if config.get("remote_only", True):
-            remote = is_remote_location(job.location, title) or bool(
-                _REMOTE_DESCRIPTION_RE.search(description)
-            )
+            remote = is_remote_location(job.location, title, description)
             checks["remote"] = (
                 (True, "100% remoto.")
                 if remote

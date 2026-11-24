@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 from ...core.config import Settings
 from ...core.errors import BlockedByPlatformError
+from ...shared.remote import is_remote_text
 
 # O ID costuma ser seguido por aspas (href/JSON-LD), não apenas por / ? # ou fim.
 _JOB_ID = re.compile(
@@ -35,32 +36,14 @@ _ANCHOR = re.compile(r"<a\b[^>]*?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.S 
 _AGE_HINT = re.compile(r"\b(ago|now|há|agora)\b", re.I)
 
 # Filtro remoto aplicado JÁ na leitura pública: o agente só aceita 100% remoto.
-_REMOTE_RE = re.compile(
-    r"\b(remote|remoto|work from home|wfh|anywhere|distributed|telecommut|teletrabalho)\b",
-    re.I,
-)
-_ONSITE_RE = re.compile(
-    r"\b(hybrid|h[íi]brido|on-?site|presencial|in[- ]office|office[- ]based)\b",
-    re.I,
-)
-# "hybrid cloud/app" é tecnologia, não modelo de trabalho.
-_TECH_HYBRID_RE = re.compile(
-    r"\bhybrid\s+(?:cloud|app|mobile|application|framework|integration|database)\b",
-    re.I,
-)
-
-
+# A regra determinística é compartilhada com a PWA, a classificação e o envio.
 def is_remote_public(*texts: str) -> bool:
-    """True somente com sinal explícito de remoto e nenhum sinal de presencial.
+    """True somente com remoto integral e nenhum sinal de presencial/híbrido.
 
     Usado na camada pública antes de salvar a vaga. ``is_remote`` do LLM e a
     checagem da tela do celular são as duas validações seguintes.
     """
-    text = " ".join(t or "" for t in texts)
-    cleaned = _TECH_HYBRID_RE.sub(" ", text)
-    if _ONSITE_RE.search(cleaned):
-        return False
-    return bool(_REMOTE_RE.search(cleaned))
+    return is_remote_text(*texts)
 
 # Sinais de que o link externo leva a um cadastro/candidatura (e não a uma
 # página institucional, de privacidade ou rede social).

@@ -339,7 +339,11 @@ def compute_checks(job: JobOpportunity) -> dict[str, dict[str, Any]]:
         job.currency, job.currency_signal
     )
     currency_reason = currency_rejection_reason(codes, ALLOWED_CURRENCIES)
-    remote_ok = is_remote_location(job.location_normalized or job.location, job.title)
+    remote_ok = is_remote_location(
+        job.location_normalized or job.location,
+        job.title,
+        job.description or "",
+    )
     score_ok = (job.score or 0) >= settings.qualification.min_score
     return {
         "remote": {

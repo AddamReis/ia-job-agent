@@ -437,3 +437,22 @@ def test_direct_approval_from_qualified_job_is_submitted_without_prepare_step() 
         (job.id, approval.id, True)
     ]
 
+
+def test_submit_preflight_rejects_partial_remote_and_hybrid_description() -> None:
+    job, approval = _approved_job()
+    job.status = JobStatus.QUALIFIED
+    repo = StubRepo([job])
+    repo.approvals[job.id] = approval
+
+    job.description = "Full-Stack Developer - 80% Remote."
+    bloqueio = submit_preflight(job, approval, _settings(), repo)
+    assert bloqueio is not None
+    assert "remoto" in bloqueio
+
+    job.description = (
+        "Flexible environment: the office, your home, or a blend of both. Remote-first."
+    )
+    bloqueio = submit_preflight(job, approval, _settings(), repo)
+    assert bloqueio is not None
+    assert "remoto" in bloqueio
+

@@ -519,3 +519,17 @@ def test_recheck_remote_blocks_non_remote_analysis() -> None:
 
     with pytest.raises(ValidationError, match="100% remota"):
         agent._recheck_remote(job, {"text": "remote"})
+
+
+def test_recheck_remote_blocks_partial_remote_in_description() -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    job = JobOpportunity(
+        external_id="123456789",
+        title="Full-Stack Developer - 80% Remote",
+        location="Töging am Inn",
+        description="80% Remote",
+    )
+
+    with pytest.raises(ValidationError, match="remoto não confirmado"):
+        agent._recheck_remote(job, {"text": "80% Remote"})

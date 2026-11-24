@@ -56,7 +56,9 @@ def submit_preflight(
     if job.analysis is not None and job.analysis.is_remote is False:
         return "a vaga deixou de ser 100% remota"
     if settings.search.remote_only and not is_remote_location(
-        job.location_normalized or job.location, job.title
+        job.location_normalized or job.location,
+        job.title,
+        job.description or "",
     ):
         return "remoto não confirmado na revalidação"
 

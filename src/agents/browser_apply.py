@@ -25,7 +25,6 @@ from ..core.logging import log_event
 from ..core.state import JobStatus
 from ..execution.forms.answers import AnswerResolver
 from ..execution.forms.field import FormField
-from ..execution.web.linkedin_public import is_remote_public
 from ..execution.web.form_dom import (
     capture_screenshot,
     click_next,
@@ -849,10 +848,10 @@ class BrowserApplyAgent:
         if analysis_remote is False:
             raise ValidationError("a vaga deixou de ser 100% remota; envio bloqueado")
         page_text = str(snapshot.get("text", "") or "")
-        remote_ok = (
-            analysis_remote is True
-            or is_remote_location(job.location, job.title)
-            or is_remote_public(page_text)
+        remote_ok = is_remote_location(
+            job.location,
+            job.title,
+            " ".join([job.description or "", page_text]),
         )
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")

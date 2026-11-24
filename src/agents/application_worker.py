@@ -142,7 +142,9 @@ class ApplicationWorker:
             return f"fora da janela de recência: {stale}"
         if job.analysis is not None and job.analysis.is_remote is False:
             return "a vaga deixou de ser 100% remota"
-        if self.settings.search.remote_only and not is_remote_location(job.location, job.title):
+        if self.settings.search.remote_only and not is_remote_location(
+            job.location, job.title, job.description or ""
+        ):
             return "remoto não confirmado na revalidação"
         detectadas = detect_currencies(f"{job.salary_raw or ''} {job.description or ''}")
         permitidas = {str(item).upper() for item in self.settings.search.currencies}
