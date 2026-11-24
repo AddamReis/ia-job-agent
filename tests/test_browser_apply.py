@@ -460,6 +460,54 @@ def test_ensure_resume_uploaded_accepts_file_without_radio(tmp_path) -> None:
     assert ensure_resume_uploaded(Page(), cv) == "uploaded"
 
 
+def test_ensure_resume_uploaded_waits_for_upload_to_finish(tmp_path) -> None:
+    cv = tmp_path / "cv-alignerr.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+    nome = cv.name
+
+    class FileInput:
+        def count(self) -> int:
+            return 1
+
+        @property
+        def last(self):
+            return self
+
+        def set_input_files(self, value: str) -> None:
+            assert value == str(cv)
+
+    class Page:
+        def __init__(self) -> None:
+            self.estado = "uploading"
+            self.esperas = 0
+
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input[type=radio]" in expression and "some" in expression:
+                return False
+            if "files:" in expression:
+                return {"blocked": False, "files": [[nome]], "radios": []}
+            if "uploading|upload in progress" in expression:
+                return self.estado == "uploading"
+            if "querySelectorAll(" in expression:
+                return True
+            return False
+
+        def locator(self, selector):
+            assert selector == 'input[type="file"]'
+            return FileInput()
+
+        def wait_for_timeout(self, _ms):
+            self.esperas += 1
+            if self.esperas >= 2:
+                self.estado = "uploaded"
+
+    page = Page()
+    assert ensure_resume_uploaded(page, cv) == "uploaded"
+    assert page.estado == "uploaded"
+
+
 def test_advance_external_landing_decides_safe_cta(tmp_path) -> None:
     class Locator:
         def __init__(self, visible: bool = True) -> None:

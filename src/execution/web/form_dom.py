@@ -179,15 +179,30 @@ _RESUME_SELECT_JS = r"""
 # Portais externos mostram o nome do arquivo em texto/link, sem radio. A checagem
 # abaixo reconhece esse estado real; ela NÃO preenche nem inventa o upload.
 _RESUME_ATTACHED_JS = r"""
-(name) => [...document.querySelectorAll(
-  'input, a, [aria-label], [title]'
-)].some(el => {
-  const value = String(el.value || '') + ' ' +
-    String(el.getAttribute('aria-label') || '') + ' ' +
-    String(el.getAttribute('title') || '') + ' ' +
-    String(el.innerText || '');
-  return value.includes(name);
-})
+(name) => {
+  const alvo = String(name || '').toLowerCase();
+  // Alignerr/MUI mostram o nome do arquivo em texto solto, sem aria/title.
+  if ((document.body.innerText || '').toLowerCase().includes(alvo)) return true;
+  return [...document.querySelectorAll('input, a, [aria-label], [title]')].some(el => {
+    const value = String(el.value || '') + ' ' +
+      String(el.getAttribute('aria-label') || '') + ' ' +
+      String(el.getAttribute('title') || '') + ' ' +
+      String(el.innerText || '');
+    return value.toLowerCase().includes(alvo);
+  });
+}
+"""
+
+# Portais como Alignerr primeiro mostram "File • Uploading" e só depois
+# "File • Uploaded". Não liberar o Continue enquanto ainda estiver enviando.
+_RESUME_UPLOADING_JS = r"""
+(name) => {
+  const alvo = String(name || '').toLowerCase();
+  const texto = (document.body.innerText || '').toLowerCase();
+  if (!alvo || !texto.includes(alvo)) return false;
+  return /uploading|upload in progress|enviando|carregando|processando|processing|cargando/i
+    .test(texto);
+}
 """
 
 
@@ -509,13 +524,18 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
             return "file_input_not_found"
     file_input.last.set_input_files(str(cv))
 
-    deadline = time.time() + 20
+    # Uploads reais (Alignerr) podem levar 15–20s antes de habilitar o Continue.
+    deadline = time.time() + 60
     while time.time() < deadline:
         state = page.evaluate(_RESUME_STATE_JS) or {}
         if state.get("blocked"):
             return "blocked"
         uploaded = any(name in item for group in state.get("files", []) for item in group)
-        if uploaded or page.evaluate(_RESUME_ATTACHED_JS, name):
+        attached = bool(page.evaluate(_RESUME_ATTACHED_JS, name))
+        if uploaded or attached:
+            if page.evaluate(_RESUME_UPLOADING_JS, name):
+                page.wait_for_timeout(500)
+                continue
             radios = state.get("radios", [])
             match = next((r for r in radios if name in r.get("label", "")), None)
             if match is not None and not match.get("checked"):
@@ -523,11 +543,7 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
             # Radio é uma forma de confirmar no LinkedIn; em portais externos o
             # próprio arquivo/input já é a evidência. Não exigir radio evita o
             # falso "currículo não foi anexado" quando não existe essa opção.
-            if (
-                _resume_selected(page, name)
-                or uploaded
-                or page.evaluate(_RESUME_ATTACHED_JS, name)
-            ):
+            if _resume_selected(page, name) or uploaded or attached:
                 log_event("browser_apply_resume_uploaded", filename=name, button=clicked)
                 return "uploaded"
         page.wait_for_timeout(500)
