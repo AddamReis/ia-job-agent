@@ -21,7 +21,11 @@ from ..execution.android.appium_driver import AppiumDevice
 from ..execution.android.credential_store import CredentialStore
 from ..execution.forms.answers import AnswerResolver
 from ..execution.gmail.gmail_client import GmailClient
-from ..execution.profile.builder import build_profile
+from ..execution.profile.builder import (
+    build_profile,
+    profile_identity_evidence,
+    profile_project_preferences,
+)
 from ..execution.web.linkedin_logged import LinkedInLoggedBrowser
 from ..execution.web.linkedin_public import LinkedInPublicBrowser
 from ..llm.factory import LLMRouter
@@ -79,6 +83,14 @@ class Orchestrator:
         self.control = ControlFlags(settings.resolve(settings.storage.control_file))
 
         self.profile = self.repo.load_profile(CandidateProfile) or build_profile(settings)
+        # Identidade e dados sensíveis cadastrados explicitamente no YAML
+        # prevalecem sobre o snapshot antigo salvo no banco.
+        for key, value in profile_identity_evidence(settings).items():
+            if value:
+                setattr(self.profile.personal, key, value)
+        preferencias = profile_project_preferences(settings)
+        if preferencias:
+            self.profile.project_preferences = preferencias
         self.repo.save_profile(self.profile)
 
         # Dois providers no mesmo DGX: o runner (MoE menor) faz extração e

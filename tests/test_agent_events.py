@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from src.models.domain import Application
 from src.storage.database import AgentEventRow, Repository
 
 
@@ -41,6 +42,23 @@ def test_failed_event_keeps_error_and_can_be_republished(tmp_path) -> None:
         linha = session.get(AgentEventRow, evento["id"])
         assert linha.status == "PENDING"
         assert linha.error == ""
+
+
+def test_record_application_resolves_previous_failed_event(tmp_path) -> None:
+    repo = Repository(tmp_path / "agent.db")
+    repo.publish_agent_event("apply_submit", "submit.requested", "job-5")
+    evento = repo.claim_agent_events("apply_submit")[0]
+    repo.ack_agent_event(evento["id"], status="FAILED", error="envio não confirmado")
+    assert len(repo.failed_agent_events(("apply_submit",), job_id="job-5")) == 1
+
+    repo.record_application(Application(opportunity_id="job-5"))
+
+    assert repo.failed_agent_events(("apply_submit",), job_id="job-5") == []
+    with repo.session() as session:
+        linha = session.get(AgentEventRow, evento["id"])
+        assert linha.status == "RESOLVED"
+        assert linha.error == "envio não confirmado"
+    assert repo.claim_agent_events("apply_submit") == []
 
 
 def test_claim_recovers_orphaned_processing_event(tmp_path) -> None:

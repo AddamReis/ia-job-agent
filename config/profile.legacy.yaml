@@ -1,15 +1,26 @@
 # Gerado a partir do currículo 11/11/2026 + base data/conhecimento.yaml.
+# Dados sensíveis (gender/birth) confirmados pelo operador em 24/11/2026.
 # O robô usa isto para campos objetivos e a base de conhecimento para perguntas descritivas.
 
 personal:
   full_name: "Addam dos Reis Oliveira"
   first_name: "Addam"
-  last_name: "dos Reis Oliveira"
+  last_name: "Oliveira"       # Legal Last Name; "dos Reis" é nome do meio
   email: "addamreis@gmail.com"
   phone: "11953058585"
   phone_display: "+55 (11) 95305-8585"
   cpf: ""
-  birth_date: ""
+  gender: "Male"              # "masculino" em inglês, opção do portal
+  birth_date: "1996-08-29"    # AAAA-MM-DD
+  birth_month: "August"
+  birth_day: "29"
+  birth_year: "1996"
+
+# Confirmado pelo operador em 24/11/2026 para o cadastro da Alignerr.
+preferences:
+  - Coding
+  - Engineering
+  - Language
 
 address:
   street: ""

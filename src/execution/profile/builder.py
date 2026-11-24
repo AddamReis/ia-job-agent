@@ -62,6 +62,41 @@ def _parse_language(raw: str) -> list[Language]:
     return result
 
 
+def profile_identity_evidence(settings: Settings) -> dict[str, str]:
+    """Dados de identidade explicitamente cadastrados no perfil legado.
+
+    O banco é a fonte corrente do perfil, mas campos sensíveis e o sobrenome
+    legal precisam refletir o que o operador cadastrou no YAML. Esta função
+    devolve apenas chaves conhecidas, nunca inferidas do currículo.
+    """
+    raw = _load_yaml(settings.resolve(settings.profile.legacy_profile)).get(
+        "personal", {}
+    )
+    keys = (
+        "full_name",
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "phone_display",
+        "gender",
+        "birth_date",
+        "birth_month",
+        "birth_day",
+        "birth_year",
+    )
+    return {key: str(raw.get(key, "") or "") for key in keys}
+
+
+def profile_project_preferences(settings: Settings) -> list[str]:
+    """Preferências de projeto explicitamente cadastradas no perfil legado."""
+    raw = _load_yaml(settings.resolve(settings.profile.legacy_profile))
+    values = raw.get("preferences", raw.get("personal", {}).get("preferences", []))
+    if isinstance(values, str):
+        values = [item.strip() for item in re.split(r"[;,]", values)]
+    return [str(item).strip() for item in (values or []) if str(item).strip()]
+
+
 def build_profile(settings: Settings) -> CandidateProfile:
     legacy = _load_yaml(settings.resolve(settings.profile.legacy_profile))
     knowledge = _load_yaml(settings.resolve(settings.profile.legacy_knowledge))
@@ -84,6 +119,11 @@ def build_profile(settings: Settings) -> CandidateProfile:
         phone=personal_raw.get("phone", ""),
         phone_display=pessoal_raw.get("telefone")
         or personal_raw.get("phone_display", ""),
+        gender=personal_raw.get("gender", ""),
+        birth_date=personal_raw.get("birth_date", ""),
+        birth_month=personal_raw.get("birth_month", ""),
+        birth_day=str(personal_raw.get("birth_day", "") or ""),
+        birth_year=str(personal_raw.get("birth_year", "") or ""),
         linkedin=links_raw.get("linkedin") or pessoal_raw.get("linkedin", ""),
         github=links_raw.get("github") or pessoal_raw.get("github", ""),
         location=pessoal_raw.get("localizacao")
@@ -195,6 +235,7 @@ def build_profile(settings: Settings) -> CandidateProfile:
         education=education,
         certifications=certifications,
         languages=languages,
+        project_preferences=profile_project_preferences(settings),
         expectations={
             k: str(v) for k, v in expectations_raw.items() if v not in (None, "")
         },

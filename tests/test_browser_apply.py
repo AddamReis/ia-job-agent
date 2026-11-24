@@ -501,6 +501,49 @@ def test_gender_and_birth_date_are_sensitive_without_evidence() -> None:
         assert categoria == "sensitive"
 
 
+def test_gender_birth_date_and_legal_last_name_use_recorded_evidence() -> None:
+    perfil = CandidateProfile()
+    perfil.personal.gender = "Male"
+    perfil.personal.birth_date = "1996-08-29"
+    perfil.personal.birth_month = "August"
+    perfil.personal.birth_day = "29"
+    perfil.personal.birth_year = "1996"
+    perfil.personal.last_name = "Oliveira"
+
+    esperado = {
+        "Gender": "Male",
+        "Date of Birth": "1996-08-29",
+        "Month": "August",
+        "Day": "29",
+        "Year": "1996",
+        "Last Name": "Oliveira",
+    }
+    for rotulo, valor_esperado in esperado.items():
+        campo = FormField(label=rotulo, required=True)
+        valor, origem, precisa_humano, categoria = resolve_local(
+            campo, perfil, Settings()
+        )
+        assert valor == valor_esperado
+        assert origem.startswith("profile.personal.")
+        assert precisa_humano is False
+        assert categoria == "general"
+
+
+def test_birth_parts_are_derived_from_iso_date() -> None:
+    perfil = CandidateProfile()
+    perfil.personal.birth_date = "1996-08-29"
+    for rotulo, valor_esperado in (
+        ("Month", "August"), ("Day", "29"), ("Year", "1996")
+    ):
+        campo = FormField(label=rotulo, required=True)
+        valor, _origem, precisa_humano, categoria = resolve_local(
+            campo, perfil, Settings()
+        )
+        assert valor == valor_esperado
+        assert precisa_humano is False
+        assert categoria == "general"
+
+
 def test_resume_attached_on_page_reads_filename_from_body_text(tmp_path) -> None:
     cv = tmp_path / "cv-alignerr.pdf"
     cv.write_bytes(b"%PDF-1.4")
@@ -826,10 +869,56 @@ def test_optional_sensitive_field_without_evidence_blocks(tmp_path) -> None:
         agent._decide(snapshot)
 
 
+def test_alignerr_preferences_use_only_operator_choices(tmp_path) -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = SitePatternStore(tmp_path / "patterns.json")
+    agent.resolver = FakeResolver()
+    agent.profile = CandidateProfile(
+        project_preferences=["Coding", "Engineering", "Language"]
+    )
+    snapshot = {
+        "url": "https://app.alignerr.com/application/preferences",
+        "fields": [
+            {
+                "index": index,
+                "label": label,
+                "type": "checkbox",
+                "required": False,
+                "options": [],
+                "autocomplete": "",
+                "identifier": "",
+                "placeholder": "",
+                "nearby_text": "",
+                "selector": f"#{index}",
+            }
+            for index, label in enumerate(("Coding", "Engineering", "Science", "Language"))
+        ],
+    }
+    decisoes = {d.signature: d.value for d in agent._decide(snapshot)}
+    assert decisoes["coding"] == "true"
+    assert decisoes["engineering"] == "true"
+    assert decisoes["science"] == "false"
+    assert decisoes["language"] == "true"
+
+
 def test_submission_state_recognizes_recruitcrm_confirmation() -> None:
     class Page:
         def locator(self, _selector):
             return type("Body", (), {"inner_text": lambda self: "Thank you for applying!"})()
+
+    assert submission_state(Page()) == "submitted"
+
+
+def test_submission_state_recognizes_alignerr_withdraw_marker() -> None:
+    class Page:
+        def locator(self, _selector):
+            return type(
+                "Body",
+                (),
+                {
+                    "inner_text": lambda self: "Software Engineer - Project Creation | Withdraw"
+                },
+            )()
 
     assert submission_state(Page()) == "submitted"
 

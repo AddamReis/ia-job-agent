@@ -89,6 +89,10 @@ _ONE_CLICK_MARKERS = (
     "concluiu sua candidatura",
 )
 _MAX_FORM_STEPS = 8
+_ALIGNERR_PREFERENCES = (
+    "Coding", "Engineering", "Mathematics", "Voice Acting", "Science",
+    "Writing", "Law", "Medicine", "Finance", "Education", "Language",
+)
 
 _LANDING_STATE_JS = r"""
 () => {
@@ -1859,6 +1863,33 @@ class BrowserApplyAgent:
                 placeholder=raw.get("placeholder", ""),
                 nearby_text=raw.get("nearby_text", ""),
             )
+            # Na Alignerr a última etapa é uma lista fixa de preferências; o
+            # operador escolheu explicitamente Coding/Engineering/Language.
+            # Marcar só essas evita que o agente deixe "Science" marcado por
+            # padrão e envie preferências diferentes das autorizadas.
+            if (
+                domain_of(url) == "app.alignerr.com"
+                and "/application/preferences" in url
+                and field.field_type == "checkbox"
+                and field.label.strip().casefold()
+                in {item.casefold() for item in _ALIGNERR_PREFERENCES}
+            ):
+                desejadas = {
+                    item.casefold() for item in self.profile.project_preferences
+                }
+                decisions.append(
+                    FillDecision(
+                        index=int(raw["index"]),
+                        signature=field.signature(),
+                        selector=str(raw.get("selector", "")),
+                        kind=str(raw.get("type", "text")),
+                        value="true" if field.label.strip().casefold() in desejadas else "false",
+                        source="profile.project_preferences",
+                        required=field.required,
+                        category="general",
+                    )
+                )
+                continue
             signature = field.signature()
             learned = self.patterns.suggest(url, signature)
             value = ""

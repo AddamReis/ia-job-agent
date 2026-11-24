@@ -1013,6 +1013,26 @@ class Repository:
                     data=_dump(application),
                 )
             )
+        # Uma tentativa que falhou antes do envio não pode continuar marcando a
+        # vaga como "Erros" depois que a candidatura foi confirmada.
+        self.resolve_failed_agent_events(application.opportunity_id)
+
+    def resolve_failed_agent_events(self, job_id: str) -> int:
+        """Encerra falhas antigas de uma vaga, preservando o motivo no banco.
+
+        O evento vira ``RESOLVED`` (não é reprocessável e sai da aba Erros da
+        PWA), mas o texto do erro permanece para auditoria.
+        """
+        with self.session() as session:
+            result = session.execute(
+                update(AgentEventRow)
+                .where(
+                    AgentEventRow.job_id == job_id,
+                    AgentEventRow.status == "FAILED",
+                )
+                .values(status="RESOLVED", updated_at=datetime.now().isoformat())
+            )
+            return int(result.rowcount or 0)
 
     def get_application_for_job(self, job_id: str) -> Application | None:
         """Última candidatura registrada para a vaga (inclui evidências)."""

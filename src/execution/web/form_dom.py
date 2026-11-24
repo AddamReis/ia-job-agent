@@ -75,7 +75,8 @@ _SNAPSHOT_JS = r"""
       const labelEl = document.querySelector('label[for=' + JSON.stringify(el.id) + ']');
       label = labelEl ? labelEl.innerText.trim() : '';
     }
-    label = label || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || '';
+    label = label || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')
+      || el.getAttribute('placeholder') || '';
     if (!String(label).trim()) {
       // MUI/Select (Alignerr): o controle é um input readonly dentro do container
       // que traz o texto do rótulo ("Select Gender", "Month", "Day", "Year").
@@ -117,13 +118,14 @@ _SNAPSHOT_JS = r"""
 """
 
 _SUBMIT_LABELS = (
+    "Complete application", "Complete", "Finish application",
     "Submit application", "Submit", "Send application", "Enviar candidatura",
     "Enviar aplicação", "Enviar aplicacao", "Enviar inscrição", "Enviar inscricao",
     "Enviar agora", "Enviar", "Aplicar", "Concluir", "Finalizar",
     "Review application", "Revisar candidatura",
 )
 _CONFIRM_MARKS = (
-    "application submitted", "application sent", "candidatura enviada",
+    "withdraw", "application submitted", "application sent", "candidatura enviada",
     "candidatura enviada com sucesso", "inscrição enviada",
     "inscricao enviada", "seu pedido foi enviado",
     "your application was submitted", "thank you for applying",
@@ -137,7 +139,7 @@ _NEXT_LABELS = (
 )
 # Rótulos de avanço nunca podem confundir com Submit/Review final.
 _SUBMIT_WORDS = (
-    "submit", "enviar candidatura", "enviar", "aplicar", "review application",
+    "submit", "complete", "finish", "enviar candidatura", "enviar", "aplicar", "review application",
     "revisar candidatura", "finalizar",
 )
 
@@ -585,6 +587,50 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
     return "unverified"
 
 
+def _choose_combobox(page: Any, target: Any, value: str) -> bool:
+    """Seleciona opção em combobox MUI (``div role=combobox``).
+
+    Esses controles não são ``input`` e rejeitam ``fill``; a seleção correta é
+    abrir o popup e clicar na opção com o texto desejado.
+    """
+    escolhido = str(value or "").strip()
+    if not escolhido:
+        return False
+    page.keyboard.press("Escape")
+    try:
+        target.click(timeout=5000)
+    except Exception:
+        target.evaluate("(el) => el.click()")
+    page.wait_for_timeout(200)
+    lista = page.locator('[role="listbox"]')
+    if lista.count() == 0 or not lista.first.is_visible():
+        try:
+            target.click(timeout=5000)
+        except Exception:
+            target.evaluate("(el) => el.click()")
+        page.wait_for_timeout(200)
+    # Correspondência exata: "Male" não pode selecionar "Female".
+    exata = re.compile(rf"^\s*{re.escape(escolhido)}\s*$", re.I)
+    opcao = page.locator('[role="listbox"] [role="option"]').filter(has_text=exata)
+    if opcao.count() == 0:
+        opcao = page.get_by_role("option", name=escolhido, exact=True)
+    if opcao.count() > 0:
+        opcao.first.click(timeout=5000)
+        page.wait_for_timeout(150)
+        if target.inner_text().strip() == escolhido:
+            return True
+    # Fallback para combobox que filtra opções ao digitar.
+    page.keyboard.press("Escape")
+    try:
+        target.click(timeout=5000)
+    except Exception:
+        target.evaluate("(el) => el.click()")
+    page.keyboard.type(escolhido)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(150)
+    return target.inner_text().strip() == escolhido
+
+
 def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
     locator = page.locator(f'[data-agent-field="{index}"]')
     if locator.count() == 0:
@@ -630,6 +676,8 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
             target.select_option(label=value)
         except Exception:
             target.select_option(value)
+    elif kind == "combobox":
+        return _choose_combobox(page, target, value)
     else:
         target.fill(value)
     return True

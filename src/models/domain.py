@@ -22,6 +22,11 @@ class PersonalInfo(BaseModel):
     email: str = ""
     phone: str = ""
     phone_display: str = ""
+    gender: str = ""
+    birth_date: str = ""
+    birth_month: str = ""
+    birth_day: str = ""
+    birth_year: str = ""
     linkedin: str = ""
     github: str = ""
     location: str = ""
@@ -83,6 +88,7 @@ class CandidateProfile(BaseModel):
     education: list[Education] = Field(default_factory=list)
     certifications: list[Certification] = Field(default_factory=list)
     languages: list[Language] = Field(default_factory=list)
+    project_preferences: list[str] = Field(default_factory=list)
     expectations: dict[str, str] = Field(default_factory=dict)
     documents: dict[str, str] = Field(default_factory=dict)
     unverified_claims: list[str] = Field(default_factory=list)
