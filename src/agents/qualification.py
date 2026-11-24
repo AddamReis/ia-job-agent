@@ -464,6 +464,10 @@ class JobQualificationAgent:
         # analisa o histórico da base sem aplicar a janela de 6h. A fila de
         # candidaturas continua revalidando a idade antes de qualquer envio.
         self.ignore_recency = False
+        # Modo auditoria: marca cada vaga processada individualmente, sem
+        # esperar o fim do lote (útil para acompanhar e retomar execuções).
+        self.audit_mode = False
+
     def _stale_reason(self, job: JobOpportunity) -> str | None:
         if self.ignore_recency:
             return None
@@ -864,6 +868,8 @@ class JobQualificationAgent:
         job.status = (
             JobStatus.REJECTED_BY_FILTER if result.decision == "SKIP" else JobStatus.QUALIFIED
         )
+        if self.audit_mode:
+            job.audit_classified_at = datetime.now()
         self.repo.update_job(job)
         if result.decision == "APPLY" and self.dependencies is not None:
             try:
@@ -905,6 +911,8 @@ class JobQualificationAgent:
                 reasons=[stale],
                 hard_reject_reason=stale,
             )
+            if self.audit_mode:
+                job.audit_classified_at = datetime.now()
             self.repo.update_job(job)
         else:
             self.qualify(job)

@@ -260,10 +260,12 @@ class Orchestrator:
         log_event("reclassify_queued", count=len(vagas))
         suppression = self.qualification.suppression
         previous_ignore_recency = self.qualification.ignore_recency
+        previous_audit_mode = getattr(self.qualification, "audit_mode", False)
         self.qualification.suppression = None
         # classify_stale NÃO ignora a janela: ela é justamente o critério que
         # separa "volta para a fila" de "continua defasada".
         self.qualification.ignore_recency = previous_ignore_recency or ignore_recency
+        self.qualification.audit_mode = classify_stale
         try:
             processadas = self.qualification.run(job_ids=[job.id for job in vagas])
             if classify_stale:
@@ -284,6 +286,7 @@ class Orchestrator:
         finally:
             self.qualification.suppression = suppression
             self.qualification.ignore_recency = previous_ignore_recency
+            self.qualification.audit_mode = previous_audit_mode
 
     # ---- comandos de controle ----
     def pause(self) -> None:

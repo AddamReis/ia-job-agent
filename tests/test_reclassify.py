@@ -39,11 +39,14 @@ class FakeQualification:
         self.suppression_during_run: object = object()
         self.ignore_recency = False
         self.ignore_recency_during_run: bool | None = None
+        self.audit_mode = False
+        self.audit_mode_during_run: bool | None = None
 
     def run(self, limit=None, job_ids=None) -> int:
         self.seen = job_ids
         self.suppression_during_run = self.suppression
         self.ignore_recency_during_run = self.ignore_recency
+        self.audit_mode_during_run = self.audit_mode
         return len(job_ids or [])
 
 
@@ -141,6 +144,8 @@ def test_reclassify_classify_stale_applies_current_window_and_marks_audit():
     assert jobs[1].status == JobStatus.QUALIFIED
     assert orch.qualification.ignore_recency_during_run is False
     assert orch.qualification.ignore_recency is False
+    assert orch.qualification.audit_mode_during_run is True
+    assert orch.qualification.audit_mode is False
 
 
 def test_reclassify_classify_stale_skips_already_audited():
