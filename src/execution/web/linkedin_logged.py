@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Callable
 from urllib.parse import unquote
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 from ...core.logging import log_event
 
@@ -41,7 +41,9 @@ class LoggedBrowserUnavailable(RuntimeError):
 def cdp_browser_version(cdp_url: str, timeout: float = 3.0) -> str:
     """Lê ``/json/version`` do Chrome logado — somente leitura, sem nova janela."""
     endereco = f"{cdp_url.rstrip('/')}/json/version"
-    with urlopen(endereco, timeout=timeout) as resposta:  # noqa: S310 - URL local configurada
+    # CDP é sempre loopback: nunca pode passar por proxy corporativo.
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(endereco, timeout=timeout) as resposta:  # noqa: S310 - URL local
         dados = json.loads(resposta.read().decode("utf-8", "replace"))
     return str(dados.get("Browser") or "")
 
