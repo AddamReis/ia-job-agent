@@ -1,6 +1,8 @@
 """Agente de candidatura no Chrome logado: URL real, aprendizado local e gate."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.agents.browser_apply import (
@@ -71,6 +73,13 @@ class FakeLocator:
 class FakePage:
     def __init__(self, url: str) -> None:
         self.url = url
+        self.context = SimpleNamespace(pages=[self])
+
+    def wait_for_timeout(self, _ms: int) -> None:
+        return None
+
+    def evaluate(self, _script: str, *_args):
+        return ""
 
 
 class FakeBrowser:
@@ -158,7 +167,9 @@ def test_route_unknown_external_portal_requires_signup() -> None:
     assert rota is ApplyRoute.EXTERNAL_SIGNUP
 
 
-def test_external_signup_stops_before_clicking(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_external_signup_opens_form_and_waits_for_login_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent = _route_agent()
     job = JobOpportunity(
         external_id="123456789", status=JobStatus.QUALIFIED, title="Engineer", company="Acme"
@@ -166,9 +177,19 @@ def test_external_signup_stops_before_clicking(monkeypatch: pytest.MonkeyPatch) 
     page = FakePage("https://www.linkedin.com/jobs/view/123456789")
     agent.browser = FakeBrowser(page)
     locator = FakeLocator("https://example.com/apply")
+    snapshots = iter(
+        [
+            {"url": page.url, "title": "Engineer | LinkedIn", "text": "Candidatar-se"},
+            {
+                "url": "https://example.com/apply",
+                "title": "Apply",
+                "text": "Preencha seus dados",
+                "fields": [],
+            },
+        ]
+    )
     monkeypatch.setattr(
-        "src.agents.browser_apply.snapshot_form",
-        lambda _page: {"url": page.url, "title": "Engineer | LinkedIn", "text": "Candidatar-se"},
+        "src.agents.browser_apply.snapshot_form", lambda _page: next(snapshots)
     )
     monkeypatch.setattr(
         BrowserApplyAgent,
@@ -176,11 +197,13 @@ def test_external_signup_stops_before_clicking(monkeypatch: pytest.MonkeyPatch) 
         staticmethod(lambda _page: [(100, "Candidatar-se", "text", locator)]),
     )
 
-    with pytest.raises(HumanActionRequired, match="cadastro"):
-        agent._open(job)
+    opened, snapshot, observation = agent._open(job)
 
-    assert locator.clicked is False
-    assert agent.browser.closed == [page]
+    assert opened is page
+    assert locator.clicked is True
+    assert observation.easy_apply is False
+    assert snapshot["url"] == "https://example.com/apply"
+    assert agent.browser.closed == []
 
 
 def test_easy_apply_is_not_recorded_for_rejected_job() -> None:

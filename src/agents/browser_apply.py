@@ -407,13 +407,9 @@ class BrowserApplyAgent:
                 destination=domain_of(destino),
                 external_id=job.external_id,
             )
-            if rota is ApplyRoute.EXTERNAL_SIGNUP:
-                self.browser.close_tab(page)
-                raise HumanActionRequired(
-                    "cadastro",
-                    f"a vaga em {domain_of(destino) or 'portal externo'} exige cadastro "
-                    "prévio; portal não listado em application.known_portals",
-                )
+            # Portal novo não é mais barra automaticamente: ele pode ter apenas
+            # um formulário de candidatura. A barreira real é login/CAPTCHA,
+            # verificada por _ensure_no_login logo após o redirecionamento.
             try:
                 before = {id(p) for p in page.context.pages}
                 locator.click()
