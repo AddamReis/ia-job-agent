@@ -106,6 +106,9 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   evidências e envia — tudo na mesma rodada. A preparação prévia (`application-serve` /
   `application-prepare-run`) continua disponível para quem quiser revisar as respostas antes,
   mas não é mais pré-requisito. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
+- Formulários preenchem **no máximo as 3 experiências mais recentes** (`profile.max_experiences_in_forms`).
+  O prompt do LLM recebe só essas três; etapas de “Work experience” não são reescritas e um cartão
+  extra vazio é removido, sem criar uma quarta experiência.
 
 Operação local: as rotinas de Apply fazem **preflight do CDP** e ficam em standby (heartbeat no
 log) até o Chrome já logado responder em `http://127.0.0.1:9222/json/version`. Elas reaproveitam
