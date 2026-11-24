@@ -26,6 +26,116 @@ const el = (tag, cls, text) => {
   return node;
 };
 
+// Visualizador de evidências: amplia a imagem sem baixar e permite navegar
+// entre os prints com setas laterais, teclado ou gesto de arrastar.
+const lightboxState = { items: [], index: 0 };
+
+function ensureLightbox() {
+  let root = $('.lightbox');
+  if (root) return root;
+  root = el('div', 'lightbox');
+  root.setAttribute('role', 'dialog');
+  root.setAttribute('aria-modal', 'true');
+  root.setAttribute('aria-label', 'Visualizador de evidências');
+  root.hidden = true;
+
+  const backdrop = el('div', 'lightbox-backdrop');
+  const panel = el('div', 'lightbox-panel');
+  const header = el('div', 'lightbox-header');
+  const counter = el('span', 'lightbox-counter');
+  const close = el('button', 'lightbox-close', '×');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Fechar visualizador');
+  header.append(counter, close);
+
+  const stage = el('div', 'lightbox-stage');
+  const prev = el('button', 'lightbox-nav prev', '‹');
+  prev.type = 'button';
+  prev.setAttribute('aria-label', 'Evidência anterior');
+  const img = el('img');
+  img.alt = '';
+  const next = el('button', 'lightbox-nav next', '›');
+  next.type = 'button';
+  next.setAttribute('aria-label', 'Próxima evidência');
+  stage.append(prev, img, next);
+
+  const caption = el('div', 'lightbox-caption');
+  panel.append(header, stage, caption);
+  root.append(backdrop, panel);
+  document.body.append(root);
+
+  root.parts = { counter, img, caption, prev, next, stage };
+  close.addEventListener('click', closeLightbox);
+  backdrop.addEventListener('click', closeLightbox);
+  prev.addEventListener('click', () => moveLightbox(-1));
+  next.addEventListener('click', () => moveLightbox(1));
+
+  let touchStartX = null;
+  stage.addEventListener('touchstart', (event) => {
+    touchStartX = event.touches[0]?.clientX ?? null;
+  }, { passive: true });
+  stage.addEventListener('touchend', (event) => {
+    if (touchStartX === null) return;
+    const delta = (event.changedTouches[0]?.clientX ?? touchStartX) - touchStartX;
+    touchStartX = null;
+    if (Math.abs(delta) > 40) moveLightbox(delta < 0 ? 1 : -1);
+  }, { passive: true });
+
+  document.addEventListener('keydown', (event) => {
+    if (root.hidden) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeLightbox();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveLightbox(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveLightbox(1);
+    }
+  });
+  return root;
+}
+
+function renderLightbox() {
+  const root = $('.lightbox');
+  if (!root || root.hidden || !lightboxState.items.length) return;
+  const { items, index } = lightboxState;
+  const item = items[Math.max(0, Math.min(index, items.length - 1))];
+  root.parts.img.src = item.href;
+  root.parts.img.alt = item.label;
+  root.parts.counter.textContent = `${index + 1} / ${items.length}`;
+  root.parts.caption.textContent = item.caption;
+  root.parts.prev.disabled = items.length < 2;
+  root.parts.next.disabled = items.length < 2;
+}
+
+function openLightbox(items, index) {
+  if (!items || !items.length) return;
+  const root = ensureLightbox();
+  lightboxState.items = items;
+  lightboxState.index = index;
+  root.hidden = false;
+  document.body.classList.add('lightbox-open');
+  renderLightbox();
+  $('.lightbox .lightbox-close')?.focus();
+}
+
+function closeLightbox() {
+  const root = $('.lightbox');
+  if (!root) return;
+  root.hidden = true;
+  document.body.classList.remove('lightbox-open');
+  root.parts.img.removeAttribute('src');
+}
+
+function moveLightbox(delta) {
+  const total = lightboxState.items.length;
+  if (total < 2) return;
+  lightboxState.index = (lightboxState.index + delta + total) % total;
+  renderLightbox();
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   const data = await res.json().catch(() => ({}));
@@ -234,21 +344,27 @@ function renderDetail(data) {
   if (evidences.length) {
     root.append(section('Evidências do Apply'));
     const grid = el('div', 'evidence-grid');
+    const galeria = [];
     for (const item of evidences) {
       const nome = String(item.path || '').split('/').pop();
       if (!nome) continue;
       const href = `/api/evidence/${encodeURIComponent(job.id)}/${encodeURIComponent(nome)}`;
-      const link = el('a', 'evidence-link');
-      link.href = href;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      const rotulo = item.label || `Evidência step ${item.step || 1}`;
+      const legendaTexto = `${item.kind === 'confirmation' ? 'Confirmação' : `Step ${item.step || 1}`} · ${rotulo}`;
+      const indice = galeria.push({ href, label: rotulo, caption: legendaTexto }) - 1;
+
+      const link = el('button', 'evidence-link');
+      link.type = 'button';
+      link.title = 'Ampliar evidência';
+      link.setAttribute('aria-label', `Ampliar ${legendaTexto}`);
       const img = el('img');
       img.src = href;
-      img.alt = item.label || `Evidência step ${item.step || 1}`;
+      img.alt = rotulo;
       img.loading = 'lazy';
       link.append(img);
-      const legenda = el('figcaption', null,
-        `${item.kind === 'confirmation' ? 'Confirmação' : `Step ${item.step || 1}`} · ${item.label || nome}`);
+      link.addEventListener('click', () => openLightbox(galeria, indice));
+
+      const legenda = el('figcaption', null, legendaTexto);
       const figure = el('figure', 'evidence');
       figure.append(link, legenda);
       grid.append(figure);
