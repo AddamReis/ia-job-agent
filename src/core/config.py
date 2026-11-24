@@ -414,6 +414,11 @@ class Settings(BaseModel):
             browser_source = os.getenv("AI_JOB_BROWSER_SOURCE")
             if browser_source is not None:
                 data.setdefault("browser", {})["source"] = browser_source
+            # O runtime da DGX roda dentro de container: o CV precisa do caminho
+            # montado lá, sem alterar o config.yaml usado pelo operador no Windows.
+            cv_path = os.getenv("AI_JOB_CV_PATH")
+            if cv_path is not None:
+                data.setdefault("profile", {})["cv_path"] = cv_path
             settings = cls.model_validate(data)
         except Exception as exc:  # pragma: no cover - fallback de diagnóstico
             raise ConfigError(f"Falha ao carregar {path}: {exc}") from exc

@@ -58,3 +58,17 @@ def test_browser_source_defaults_to_config_when_env_is_absent(
     settings = Settings.load(tmp_path)
 
     assert settings.browser.source == "chrome"
+
+
+def test_cv_path_can_be_overridden_for_container(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.yaml").write_text(
+        'profile:\n  cv_path: "C:\\\\Users\\\\addam\\\\Downloads\\\\cv.pdf"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AI_JOB_CV_PATH", "/app/data/cv/cv-internacional.pdf")
+
+    settings = Settings.load(tmp_path)
+
+    assert settings.profile.cv_path == "/app/data/cv/cv-internacional.pdf"
