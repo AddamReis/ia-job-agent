@@ -29,6 +29,7 @@ from src.models.domain import (
     ApplicationEvidence,
     ApprovalRequest,
     CandidateProfile,
+    Experience,
     JobOpportunity,
 )
 from src.models.schemas import AnswerDecision
@@ -268,6 +269,60 @@ def test_walk_steps_retries_resume_until_later_step(
 
     assert [step.number for step in steps] == [1, 2]
     assert tentativas == ["upload_button_not_found", "uploaded"]
+
+
+def test_walk_steps_skips_experience_step_and_removes_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Work experience já vem do perfil: nunca preencher um quarto cartão."""
+    agent = _walk_agent(tmp_path)
+    agent.profile = CandidateProfile(
+        experiences=[
+            Experience(company=f"Empresa {indice}", title=f"Cargo {indice}")
+            for indice in range(3)
+        ]
+    )
+    experience_snapshot = _snapshot("https://portal.test/step-3", "Your title")
+    experience_snapshot["text"] = "Work experience"
+    snapshots = iter(
+        [
+            experience_snapshot,
+            experience_snapshot,
+            _snapshot("https://portal.test/step-4", "Email", index=5),
+        ]
+    )
+    removals: list[list[str]] = []
+    removal_results = iter([True, False])
+    labels = iter(["Next", ""])
+
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form", lambda page: next(snapshots)
+    )
+    monkeypatch.setattr(
+        "src.agents.browser_apply.next_step_label",
+        lambda page: next(labels),
+    )
+    monkeypatch.setattr("src.agents.browser_apply.click_next", lambda page, label: True)
+    monkeypatch.setattr("src.agents.browser_apply.submission_state", lambda page: "unknown")
+    def fake_remove(_page, titles):
+        if next(removal_results):
+            removals.append(titles)
+            return True
+        return False
+
+    monkeypatch.setattr(
+        "src.agents.browser_apply.remove_extra_experience_entry", fake_remove
+    )
+
+    steps = agent._walk_steps(
+        FakePage(), JobOpportunity(external_id="123456789", title="Dev", company="Acme")
+    )
+
+    assert [step.number for step in steps] == [1, 2]
+    assert steps[0].decisions == []
+    assert steps[1].decisions[0].signature == "email"
+    assert removals == [[exp.title for exp in agent.profile.experiences]]
 
 
 def test_walk_steps_blocks_submit_without_resume(

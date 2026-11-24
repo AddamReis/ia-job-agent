@@ -25,6 +25,10 @@ _SENSITIVE_CATEGORIES = {
     "captcha_mfa", "profile_changes", "salary_expectation",
 }
 
+# Formulários usam no máximo as 3 experiências mais recentes. Nunca criar uma
+# quarta entry com dados repetidos ou inventados.
+MAX_EXPERIENCES_IN_FORMS = 3
+
 
 def extract_cv_text(path: Path) -> str:
     """Extrai texto do PDF sem gravar screenshots ou arquivos intermediários."""
@@ -95,8 +99,19 @@ def build_profile(settings: Settings) -> CandidateProfile:
         ),
     )
 
+    max_experiences = max(
+        1,
+        int(
+            getattr(
+                settings.profile,
+                "max_experiences_in_forms",
+                MAX_EXPERIENCES_IN_FORMS,
+            )
+            or MAX_EXPERIENCES_IN_FORMS
+        ),
+    )
     experiences: list[Experience] = []
-    for item in knowledge.get("experiencias", []):
+    for item in knowledge.get("experiencias", [])[:max_experiences]:
         experiences.append(
             Experience(
                 company=item.get("empresa", ""),
@@ -199,8 +214,17 @@ def build_profile(settings: Settings) -> CandidateProfile:
     return profile
 
 
-def profile_context(profile: CandidateProfile) -> str:
-    """Contexto compacto e com procedência para o LLM responder perguntas."""
+def profile_context(
+    profile: CandidateProfile,
+    max_experiences: int = MAX_EXPERIENCES_IN_FORMS,
+) -> str:
+    """Contexto compacto e com procedência para o LLM responder perguntas.
+
+    Só as experiências mais recentes entram no prompt de preenchimento: o
+    agente não deve criar nem preencher uma quarta experiência inexistente.
+    """
     data = profile.model_dump(mode="json")
     data.pop("unverified_claims", None)
+    if max_experiences > 0 and isinstance(data.get("experiences"), list):
+        data["experiences"] = data["experiences"][:max_experiences]
     return json.dumps(data, ensure_ascii=False, indent=2)[:16000]

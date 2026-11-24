@@ -32,7 +32,9 @@ from ..execution.web.form_dom import (
     click_submit,
     ensure_resume_uploaded,
     fill_field,
+    is_experience_step,
     next_step_label,
+    remove_extra_experience_entry,
     snapshot_form,
     submission_state,
 )
@@ -238,7 +240,43 @@ class BrowserApplyAgent:
                 snapshot, status = self._handle_resume(page, snapshot)
                 resume_ready = status in {"uploaded", "selected", "already_attached"}
                 self._ensure_not_blocked(page)
-            decisions = self._decide(snapshot)
+            max_experiences = max(
+                1,
+                int(
+                    getattr(
+                        self.settings.profile,
+                        "max_experiences_in_forms",
+                        3,
+                    )
+                    or 3
+                ),
+            )
+            titulos_conhecidos = [
+                exp.title for exp in self.profile.experiences[:max_experiences]
+            ]
+            if (
+                is_experience_step(snapshot)
+                and len(self.profile.experiences) >= max_experiences
+            ):
+                # O LinkedIn já traz as experiências do perfil. Não preencher,
+                # duplicar ou criar um quarto cartão: apenas remover um cartão
+                # extra vazio e seguir para a próxima etapa.
+                removals = 0
+                while (
+                    remove_extra_experience_entry(page, titulos_conhecidos)
+                    and removals < 3
+                ):
+                    page.wait_for_timeout(500)
+                    snapshot = snapshot_form(page)
+                    removals += 1
+                decisions = []
+                log_event(
+                    "browser_apply_experience_step_skipped",
+                    known_experiences=len(titulos_conhecidos),
+                    removed_extras=removals,
+                )
+            else:
+                decisions = self._decide(snapshot)
             rotulo = next_step_label(page)
             url = str(snapshot.get("url", "") or "")
             step = PreparedStep(

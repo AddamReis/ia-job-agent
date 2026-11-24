@@ -233,6 +233,8 @@ ANSWER_SYSTEM = """Voce preenche formularios usando SOMENTE perfil e evidencias 
 
 Regras obrigatorias:
 - Nunca invente experiencia, tecnologia, certificacao, idioma ou resultado.
+- Use NO MAXIMO as 3 experiencias mais recentes do perfil. Nunca crie, sugira
+  ou preencha uma quarta experiencia (ou qualquer experiencia adicional).
 - Se a resposta nao estiver no perfil, marque needs_human=true e deixe value vazio.
 - Nunca aceite termos legais, politica de privacidade, autorizacao de trabalho,
   patrocinio de visto ou compromissos contratuais. Marque needs_human=true.

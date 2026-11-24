@@ -83,6 +83,7 @@ _SNAPSHOT_JS = r"""
       name: (el.getAttribute('name') || '').slice(0, 200),
       identifier: (el.id || el.getAttribute('name') || '').slice(0, 200),
       autocomplete: (el.getAttribute('autocomplete') || '').slice(0, 100),
+      value: String(el.value || '').slice(0, 300),
       required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
       options: options.slice(0, 60),
       nearby_text: (parent.innerText || '').slice(0, 200),
@@ -166,6 +167,85 @@ _RESUME_SELECT_JS = r"""
 
 def snapshot_form(page: Any) -> dict[str, Any]:
     return page.evaluate(_SNAPSHOT_JS) or {}
+
+
+_EXPERIENCE_STEP_MARKS = (
+    "work experience",
+    "work history",
+    "experiência profissional",
+    "experiencia profissional",
+)
+_EXPERIENCE_REMOVE_LABELS = (
+    "Excluir experiência",
+    "Excluir experiência profissional",
+    "Remove experience",
+    "Delete experience",
+    "Eliminar experiencia",
+)
+_EXPERIENCE_CARD_JS = r"""
+(btn) => {
+  const root = btn.closest('li, article, section, [role="group"]')
+    || btn.parentElement?.parentElement
+    || btn.parentElement;
+  const inputs = root ? [...root.querySelectorAll('input, textarea')] : [];
+  const field = inputs.find(el => /your title|job title|\btitle\b|cargo|t[ií]tulo/i.test(
+    ((el.getAttribute('aria-label') || '') + ' ' +
+     (el.getAttribute('placeholder') || '') + ' ' +
+     (el.getAttribute('name') || ''))
+  ));
+  return {
+    title: field ? String(field.value || '').trim() : '',
+    text: root ? (root.innerText || '').slice(0, 300) : '',
+  };
+}
+"""
+
+
+def is_experience_step(snapshot: dict[str, Any]) -> bool:
+    """True quando a etapa do formulário pede histórico profissional."""
+    text = str(snapshot.get("text", "") or "").lower()
+    return any(mark in text for mark in _EXPERIENCE_STEP_MARKS)
+
+
+def _normalize_title(value: object) -> str:
+    return re.sub(r"\W+", " ", str(value or "").lower()).strip()
+
+
+def remove_extra_experience_entry(page: Any, profile_titles: list[str]) -> bool:
+    """Remove um cartão de experiência vazio/extra sem tocar nos reais.
+
+    Só clica em "Excluir experiência" quando o cartão não contém nenhum título
+    conhecido do perfil. Isso evita apagar uma das 3 experiências verdadeiras
+    e impede que um quarto cartão seja criado/preenchido.
+    """
+    conhecidos = {
+        normalized
+        for title in profile_titles
+        if (normalized := _normalize_title(title))
+    }
+    for label in _EXPERIENCE_REMOVE_LABELS:
+        locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
+        for indice in range(locator.count()):
+            button = locator.nth(indice)
+            try:
+                if not button.is_visible():
+                    continue
+                info = button.evaluate(_EXPERIENCE_CARD_JS) or {}
+                titulo = _normalize_title(info.get("title", ""))
+                texto = _normalize_title(info.get("text", ""))
+                if titulo in conhecidos or any(
+                    conhecido and conhecido in texto for conhecido in conhecidos
+                ):
+                    continue
+                button.click()
+                log_event(
+                    "browser_apply_extra_experience_removed",
+                    title=str(info.get("title", ""))[:80],
+                )
+                return True
+            except Exception:
+                continue
+    return False
 
 
 def _resume_selected(page: Any, name: str) -> bool:

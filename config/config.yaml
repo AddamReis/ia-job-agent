@@ -271,6 +271,8 @@ profile:
   cv_path: "C:\\Users\\addam\\Downloads\\Addam dos Reis Oliveira - Software Engineer.pdf"
   legacy_profile: "config/profile.legacy.yaml"
   legacy_knowledge: "config/conhecimento.legacy.yaml"
+  # Nunca preencher mais do que as 3 experiências mais recentes.
+  max_experiences_in_forms: 3
   # Doc local opcional de domínios em tecnologias para perguntas de formulário.
   tech_domains_doc: ""
   # Setores com experiencia comprovada no CV. Usados somente para checar
