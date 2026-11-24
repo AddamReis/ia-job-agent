@@ -1178,6 +1178,21 @@ class BrowserApplyAgent:
         "Allow", "Authorize", "Accept", "Permitir", "Autorizar",
         "Continuar", "Continue",
     )
+    # Último recurso quando o locator do Playwright não encontra o rótulo:
+    # clicar no elemento renderizado, sem adivinhar seletor CSS.
+    _JS_CLICK_BY_TEXT = r"""
+    (rotulo) => {
+      const alvo = (rotulo || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!alvo) return false;
+      for (const el of document.querySelectorAll('button,a,[role=button]')) {
+        const texto = (el.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (!texto.includes(alvo) || el.disabled) continue;
+        el.click();
+        return true;
+      }
+      return false;
+    }
+    """
 
     @classmethod
     def _google_challenge_detected(cls, page: Any, texto: str) -> bool:
@@ -1240,13 +1255,17 @@ class BrowserApplyAgent:
             alvo = page.get_by_text(rotulo, exact=False)
             if alvo.count() == 0:
                 alvo = page.get_by_role("button", name=re.compile(re.escape(rotulo), re.I))
-            if alvo.count() == 0:
-                continue
+            if alvo.count():
+                try:
+                    alvo.first.click()
+                    return rotulo
+                except Exception:
+                    pass
             try:
-                alvo.first.click()
-                return rotulo
+                if page.evaluate(self._JS_CLICK_BY_TEXT, rotulo):
+                    return rotulo
             except Exception:
-                continue
+                pass
         raise HumanActionRequired(
             "login", f"botão de login {provedor} não encontrado em {dominio}"
         )
@@ -1314,6 +1333,42 @@ class BrowserApplyAgent:
             self._close_oauth_pages(page.context, "accounts.google.com", preservar=(page,))
             return self._fallback_oauth_login(page, cfg, dominio)
 
+    @staticmethod
+    def _portal_page_for_fallback(
+        page: Any, cfg: Any, dominio: str, labels: list[str]
+    ) -> Any:
+        """Escolhe a aba do portal que realmente exibe o botão alternativo.
+
+        Depois do popup do Google, a aba usada no clique pode ter navigado para
+        o callback. As outras abas do mesmo domínio continuam no /signin.
+        """
+        contexto = page.context
+        util = lambda candidata: (
+            "linkedin.com" not in str(candidata.url or "")
+            and "accounts.google.com" not in str(candidata.url or "")
+            and domain_of(str(candidata.url or "")) == dominio
+        )
+        candidatas = [page] + [
+            p for p in contexto.pages if p is not page and util(p)
+        ]
+        for candidata in candidatas:
+            for rotulo in labels:
+                try:
+                    if candidata.get_by_text(rotulo, exact=False).count():
+                        return candidata
+                except Exception:
+                    continue
+        for candidata in contexto.pages:
+            if util(candidata) and hasattr(candidata, "goto"):
+                try:
+                    candidata.goto(
+                        cfg.login_url, wait_until="domcontentloaded", timeout=30000
+                    )
+                    return candidata
+                except Exception:
+                    continue
+        return page
+
     def _fallback_oauth_login(self, page: Any, cfg: Any, dominio: str) -> Any:
         """Tenta o provedor alternativo já logado no Chrome, sem digitar nada."""
         labels = list(getattr(cfg, "oauth_fallback_labels", []) or [])
@@ -1321,6 +1376,14 @@ class BrowserApplyAgent:
             raise HumanActionRequired(
                 "login", f"fallback de login não configurado em {dominio}"
             )
+        pagina_portal = self._portal_page_for_fallback(page, cfg, dominio, labels)
+        log_event(
+            "portal_oauth_fallback_page",
+            domain=dominio,
+            url=str(pagina_portal.url or "")[:160],
+            atual=str(page.url or "")[:160],
+        )
+        page = pagina_portal
         # A aba do portal pode ter voltado ao /signin com os termos desmarcados
         # quando o popup do Google foi aberto. Reler e aceitar antes de clicar.
         page = self._accept_terms_if_needed(page, self._landing_state(page), cfg)
