@@ -638,16 +638,16 @@ def classification_validate(
     ),
     reason: str = typer.Option("", "--reason", help="Motivo da validação."),
 ) -> None:
-    """Registra validação humana como sinal de aprendizado auditável."""
+    """Registra a revisão humana e reaplica as regras quando corrigiu."""
     orchestrator = _orchestrator()
-    job = orchestrator.repo.get_job(job_id)
-    if job is None:
-        console.print(f"[red]Vaga não encontrada: {job_id}[/red]")
+    try:
+        resultado = orchestrator.validate_classification(
+            job_id, correct=correct, reason=reason
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
-    gravados = orchestrator.qualification_memory.record_validation(
-        job, correct=correct, reason=reason
-    )
-    console.print(json.dumps({"job_id": job_id, "feedback": gravados}, ensure_ascii=False))
+    console.print(json.dumps(resultado, ensure_ascii=False))
 
 
 @app.command("fast-lane")

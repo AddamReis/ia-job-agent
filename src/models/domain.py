@@ -140,6 +140,21 @@ class QualificationResult(BaseModel):
     hard_reject_reason: str | None = None
 
 
+class ClassificationValidation(BaseModel):
+    """Revisão humana de uma classificação, com o antes/depois auditável."""
+
+    validated_at: datetime = Field(default_factory=datetime.now)
+    correct: bool
+    reason: str = ""
+    before_status: str = ""
+    after_status: str = ""
+    before_decision: str = ""
+    after_decision: str = ""
+    before_score: int | None = None
+    after_score: int | None = None
+    reclassified: bool = False
+
+
 class JobOpportunity(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     # Correlaciona o card descoberto à execução que o encontrou (rastreabilidade).
@@ -205,6 +220,9 @@ class JobOpportunity(BaseModel):
     # Contexto aprendido de classificações/decisões anteriores, injetado no DGX
     # como informação auditável (nunca substitui regra dura nem peso do score).
     memory_context: str = ""
+    # Última revisão humana da classificação. Quando corrige, o antes/depois
+    # fica gravado na própria vaga para auditoria e para a PWA.
+    validation: ClassificationValidation | None = None
     score: int | None = None
     score_breakdown: dict[str, int] = Field(default_factory=dict)
     analysis: JobAnalysis | None = None

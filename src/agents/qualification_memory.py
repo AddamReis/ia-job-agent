@@ -177,37 +177,69 @@ class QualificationMemory:
         )
 
     def context_for(self, job: JobOpportunity, limit: int = 8) -> str:
-        """Devolve contexto curto, priorizando sinais parecidos com a vaga atual."""
+        """Contexto curto: correções humanas primeiro, confirmações depois.
+
+        A versão anterior deixava confirmações positivas dominarem o trecho
+        injetado no prompt (21 positivos para 2 negativos na base atual), o que
+        fazia o erro corrigido competir com o acerto já conhecido. Aqui o peso
+        de veredito/origem vem antes da frequência, e uma correção humana
+        sempre reserva espaço mesmo quando há muitas confirmações.
+        """
         itens = self.repo.list_qualification_feedback(limit=300)
         if not itens:
             return ""
         relevantes = set(self.topics_for(job))
         groups: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
-            lambda: {"count": 0, "score": 0.0, "detail": ""}
+            lambda: {"count": 0, "score": 0.0, "detail": "", "priority": False}
         )
         for item in itens:
-            score = 2.0 + {"negative": 2.0, "positive": 1.0, "attention": 1.0}.get(
-                item.verdict, 1.0
-            )
+            score = 1.0 + {
+                "negative": 4.0,
+                "attention": 2.0,
+                "positive": 0.5,
+            }.get(item.verdict, 0.5)
+            score += {
+                "human_validation": 3.0,
+                "human_approval": 2.0,
+                "reclassification": 1.5,
+                "application_outcome": 0.5,
+            }.get(item.source, 0.5)
             if item.topic in relevantes:
                 score += 6.0
             if item.topic == "global":
                 score += 0.5
+            prioritaria = (
+                item.verdict in {"negative", "attention"}
+                and item.source in {"human_validation", "human_approval", "reclassification"}
+            )
+            if prioritaria:
+                score += 2.0
             group = groups[(item.topic, item.verdict, item.source)]
             group["count"] += 1
             group["score"] = max(group["score"], score)
+            group["priority"] = group["priority"] or prioritaria
             if not group["detail"]:
                 group["detail"] = item.detail
         ordered = sorted(
             groups.items(),
-            key=lambda pair: (pair[1]["score"] + min(pair[1]["count"], 5), pair[0][0]),
+            key=lambda pair: (pair[1]["score"] + min(pair[1]["count"], 3) * 0.5, pair[0][0]),
             reverse=True,
         )
-        linhas: list[str] = []
-        for (topic, verdict, source), group in ordered[:limit]:
+
+        def linha(item: tuple[tuple[str, str, str], dict[str, Any]]) -> str:
+            (topic, verdict, source), group = item
             origem = _SOURCE_LABEL.get(source, source)
-            linhas.append(
+            return (
                 f"- [{origem}/{_VERDICT_LABEL.get(verdict, verdict)} {group['count']}x] "
                 f"{topic}: {group['detail'][:180]}"
             )
-        return "\n".join(linhas)[:3200]
+
+        correcoes = [item for item in ordered if item[1]["priority"]]
+        confirmacoes = [item for item in ordered if not item[1]["priority"]]
+        if correcoes:
+            n_correcoes = min(len(correcoes), max(1, limit - 1))
+            selecionadas = correcoes[:n_correcoes]
+            selecionadas += confirmacoes[: limit - len(selecionadas)]
+        else:
+            selecionadas = confirmacoes[:limit]
+        return "\n".join(linha(item) for item in selecionadas)[:3200]

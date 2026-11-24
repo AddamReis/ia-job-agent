@@ -105,3 +105,25 @@ def test_approval_gate_notifies_memory(monkeypatch) -> None:
 
     assert gate.request(approval) is False
     assert decisions == [(approval, False)]
+
+
+def test_human_correction_comes_before_many_confirmations(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    job = _job()
+    repo.upsert_job(job)
+    memory = QualificationMemory(repo)
+
+    for _ in range(6):
+        memory.record(job, source="human_validation", verdict="positive", reason="correto")
+    memory.record(
+        job,
+        source="human_validation",
+        verdict="negative",
+        reason="Java é a linguagem principal; decisão deveria ser SKIP",
+    )
+
+    linhas = memory.context_for(job).splitlines()
+    assert linhas
+    assert "validação humana/negativo" in linhas[0]
+    assert any("stack:java" in linha for linha in linhas)
+    assert any("validação humana/positivo" in linha for linha in linhas[1:])

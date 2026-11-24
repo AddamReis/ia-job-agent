@@ -25,7 +25,12 @@ from ..execution.profile.builder import build_profile
 from ..execution.web.linkedin_logged import LinkedInLoggedBrowser
 from ..execution.web.linkedin_public import LinkedInPublicBrowser
 from ..llm.factory import LLMRouter
-from ..models.domain import CandidateProfile, ExecutionHistory, JobOpportunity
+from ..models.domain import (
+    CandidateProfile,
+    ClassificationValidation,
+    ExecutionHistory,
+    JobOpportunity,
+)
 from ..storage.database import Repository
 from .application import ApplicationAgent
 from .approval import ApprovalGate
@@ -287,6 +292,77 @@ class Orchestrator:
             self.qualification.suppression = suppression
             self.qualification.ignore_recency = previous_ignore_recency
             self.qualification.audit_mode = previous_audit_mode
+
+    def validate_classification(
+        self, job_id: str, *, correct: bool, reason: str = ""
+    ) -> dict:
+        """Fecha o loop da revisão humana.
+
+        ``--wrong`` grava o sinal de correção e reclassifica a vaga com as
+        regras atuais. A janela de recência é ignorada aqui de propósito: o
+        objetivo é aplicar a correção ao perfil, não descartar a vaga por
+        idade. Nunca há candidatura — o gate humano da PWA continua sendo a
+        única porta de envio. O antes/depois fica em ``job.validation``.
+        """
+        job = self.repo.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Vaga não encontrada: {job_id}")
+
+        def snapshot(item: JobOpportunity) -> dict:
+            return {
+                "status": item.status.value,
+                "decision": item.qualification.decision if item.qualification else "",
+                "score": item.score,
+            }
+
+        before = snapshot(job)
+        feedback = self.qualification_memory.record_validation(
+            job, correct=correct, reason=reason
+        )
+        reclassificado = False
+        if not correct:
+            try:
+                reclassificado = bool(
+                    self.reclassify_jobs(job_ids=[job_id], ignore_recency=True)
+                )
+            except Exception as exc:
+                log_event(
+                    "classification_revalidation_failed",
+                    job_id=job_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        atual = self.repo.get_job(job_id) or job
+        after = snapshot(atual)
+        atual.validation = ClassificationValidation(
+            correct=correct,
+            reason=reason,
+            before_status=before["status"],
+            after_status=after["status"],
+            before_decision=before["decision"],
+            after_decision=after["decision"],
+            before_score=before["score"],
+            after_score=after["score"],
+            reclassified=reclassificado,
+        )
+        self.repo.update_job(atual)
+        log_event(
+            "classification_validated",
+            job_id=job_id,
+            correct=correct,
+            feedback=feedback,
+            reclassified=reclassificado,
+            before=before,
+            after=after,
+        )
+        return {
+            "job_id": job_id,
+            "correct": correct,
+            "reason": reason,
+            "feedback": feedback,
+            "reclassified": reclassificado,
+            "before": before,
+            "after": after,
+        }
 
     # ---- comandos de controle ----
     def pause(self) -> None:
