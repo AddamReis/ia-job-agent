@@ -14,7 +14,7 @@ from src.agents.classification_worker import (
     ClassificationWorker,
     sort_for_classification,
 )
-from src.agents.submit_worker import SubmitWorker
+from src.agents.submit_worker import SubmitWorker, submit_preflight
 from src.core.config import Settings
 from src.core.events import EventBus
 from src.core.state import JobStatus
@@ -412,3 +412,28 @@ def test_submit_worker_revalidates_recency_before_sending() -> None:
     assert agent.calls == []
     assert repo.events[event_id]["status"] == "FAILED"
     assert "recência" in repo.events[event_id]["error"]
+
+
+def test_direct_approval_from_qualified_job_is_submitted_without_prepare_step() -> None:
+    job, approval = _approved_job()
+    job.status = JobStatus.QUALIFIED  # clique único na PWA, sem PENDING_APPROVAL
+    approval.answers = []  # aprovação mínima criada pelo clique
+    repo = StubRepo([job])
+    repo.approvals[job.id] = approval
+    repo.publish_agent_event(
+        "apply_submit",
+        "review.approved",
+        job.id,
+        {"approval_id": approval.id, "review_decision_id": "decision-1"},
+    )
+    agent = RecordingSubmitAgent()
+
+    assert submit_preflight(job, approval, _settings(), repo) is None
+
+    counters = SubmitWorker(repo, _settings(), agent).run()
+
+    assert counters == {"events": 1, "submitted": 1, "blocked": 0, "errors": 0}
+    assert [(item[0].id, item[1].id, item[2]) for item in agent.calls] == [
+        (job.id, approval.id, True)
+    ]
+

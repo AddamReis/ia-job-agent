@@ -87,6 +87,9 @@ class StubRepo:
     def get_review_decision_for_job(self, job_id: str):
         return None
 
+    def get_application_for_job(self, job_id: str):
+        return None
+
 
 def _job(
     job_id: str,
@@ -256,8 +259,109 @@ def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v6'" in source
+    assert "const CACHE = 'review-pwa-v7'" in source
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at
     assert "pathname.startsWith('/api/')" in source
+
+
+class ActionRepo:
+    """Repo mínimo para o clique único da PWA."""
+
+    def __init__(self, approval: ApprovalRequest | None = None) -> None:
+        self.approval = approval
+        self.created: list[ApprovalRequest] = []
+        self.resolved: list[tuple[str, bool]] = []
+        self.decisions: list[dict] = []
+        self.events: list[tuple[str, str, str, dict]] = []
+        self.updated: list[JobOpportunity] = []
+
+    def get_approval_for_job(self, _job_id: str):
+        return self.approval
+
+    def create_approval(self, approval: ApprovalRequest) -> None:
+        self.created.append(approval)
+        self.approval = approval
+
+    def resolve_approval(self, approval_id: str, approved: bool):
+        self.resolved.append((approval_id, approved))
+        self.approval.status = "APPROVED" if approved else "REJECTED"
+        return self.approval
+
+    def record_review_decision(self, job_id, decision, **kwargs):
+        item = {"job_id": job_id, "decision": decision, **kwargs}
+        item["id"] = f"decision-{len(self.decisions) + 1}"
+        self.decisions.append(item)
+        return item
+
+    def publish_agent_event(self, consumer, event_type, job_id, payload):
+        self.events.append((consumer, event_type, job_id, payload))
+
+    def update_job(self, job: JobOpportunity) -> None:
+        self.updated.append(job)
+
+
+def test_qualified_job_is_approvable_without_prepared_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job("pronto", JobStatus.QUALIFIED)
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo([job]))
+
+    detail = review.job_detail("pronto")
+
+    assert detail is not None
+    assert detail["can_check"] is True
+    assert detail["approval"] is None
+
+
+def test_direct_approval_creates_minimal_approval_and_publishes_event() -> None:
+    job = _job("direto", JobStatus.QUALIFIED)
+    repo = ActionRepo()
+    checks = {"remote": {"ok": True}}
+
+    decision = review.record_review_action(repo, job, "APPROVED", {"note": "quero"}, checks)
+
+    assert len(repo.created) == 1
+    assert repo.created[0].answers == []
+    assert repo.resolved == [(repo.created[0].id, True)]
+    assert decision["decision"] == "APPROVED"
+    assert decision["note"] == "quero"
+    assert repo.events == [
+        (
+            "apply_submit",
+            "review.approved",
+            "direto",
+            {"approval_id": repo.created[0].id, "review_decision_id": decision["id"]},
+        )
+    ]
+    assert repo.updated == []  # o worker muda para APPLYING ao preparar/enviar
+
+
+def test_reject_without_prepared_form_marks_job_rejected() -> None:
+    job = _job("nao", JobStatus.QUALIFIED)
+    repo = ActionRepo()
+
+    review.record_review_action(repo, job, "REJECTED", {}, {})
+
+    assert repo.created[0].status == "REJECTED"
+    assert job.status == JobStatus.REJECTED_BY_FILTER
+    assert repo.updated == [job]
+    assert repo.events == []
+
+
+def test_only_eligible_jobs_can_authorize_apply() -> None:
+    assert review.can_authorize_apply(_job("ok", JobStatus.QUALIFIED), None) is True
+    assert review.can_authorize_apply(
+        _job("pendente", JobStatus.PENDING_APPROVAL),
+        ApprovalRequest(status="PENDING"),
+    ) is True
+    assert review.can_authorize_apply(
+        _job("enviado", JobStatus.SUBMITTED, has_applied=True), None
+    ) is False
+    assert review.can_authorize_apply(_job("erro", JobStatus.APPLYING), None,
+                                      automation_error="CAPTCHA") is False
+    assert review.can_authorize_apply(
+        _job("aprovado", JobStatus.QUALIFIED), ApprovalRequest(status="APPROVED")
+    ) is False
+

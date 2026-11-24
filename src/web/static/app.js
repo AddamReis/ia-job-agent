@@ -221,14 +221,14 @@ function renderDetail(data) {
     root.append(chips(data.missing_core));
   }
 
-  root.append(section('Formulário preparado'));
+  root.append(section('Formulário'));
   const answers = (data.approval && data.approval.answers) || [];
   root.append(kv(answers.length
     ? answers.map((ans) => [
         `Step ${ans.step || 1} · ${ans.field || 'campo'}`,
         `${ans.value_redacted || '—'} (${ans.source || '—'})`,
       ])
-    : [['Estado', data.approval ? 'sem respostas registradas' : 'ainda não preparado']]));
+    : [['Estado', 'o agente prepara e preenche após sua autorização']]));
 
   const evidences = data.evidence || [];
   if (evidences.length) {
@@ -266,12 +266,12 @@ function renderDetail(data) {
   }
 
   const actions = el('div', 'actions');
-  const approve = el('button', 'btn approve', 'Aprovar e autorizar Apply');
+  const approve = el('button', 'btn approve', 'Quero me candidatar — automatizar');
   const reject = el('button', 'btn reject', 'Rejeitar');
   approve.disabled = !data.can_check;
   reject.disabled = !data.can_check;
   if (!data.can_check) {
-    root.append(el('p', 'reason', 'O formulário ainda não foi preparado pelo agente. O check aparece assim que ele estiver pronto.'));
+    root.append(el('p', 'reason', 'Vaga já enviada, recusada, em andamento ou com erro de automação.'));
   }
   approve.addEventListener('click', () => decide(job.id, 'approve'));
   reject.addEventListener('click', () => decide(job.id, 'reject'));
@@ -282,7 +282,9 @@ function renderDetail(data) {
 async function decide(id, action) {
   try {
     await api(`/api/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' });
-    toast(action === 'approve' ? 'Aprovado — agente autorizado.' : 'Rejeitado e registrado.');
+    toast(action === 'approve'
+      ? 'Autorizado — o agente vai preparar e enviar a candidatura.'
+      : 'Rejeitado e registrado.');
     closeDetail();
     await load();
   } catch (err) {

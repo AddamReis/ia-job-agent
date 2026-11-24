@@ -100,9 +100,12 @@ fonte da verdade e travas próprias em `run_locks` (`classification` e `applicat
   reutiliza padrões de formulário já aprendidos por domínio e aprende novos após envios
   bem-sucedidos. **Zaply** (envio simplificado) corresponde à rota `EASY_APPLY` do mesmo
   `BrowserApplyAgent`. Não há integração externa com produtos de mesmo nome neste repositório.
-- O envio continua exigindo `APPROVED` persistido; a PWA é a interface que registra essa
-  decisão e publica o aviso para o `apply-submit-serve`. `ApprovalGate` e `submit()` não
-  foram alterados. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
+- O botão **“Quero me candidatar — automatizar”** da PWA é a própria autorização: aparece
+  para toda vaga `QUALIFIED`, sem exigir formulário preparado antes. O clique grava a decisão,
+  publica `review.approved` e o `apply-submit-serve` abre o Chrome logado, preenche, captura
+  evidências e envia — tudo na mesma rodada. A preparação prévia (`application-serve` /
+  `application-prepare-run`) continua disponível para quem quiser revisar as respostas antes,
+  mas não é mais pré-requisito. CAPTCHA/MFA/verificação nunca são resolvidos: a rodada para.
 
 Operação local: as rotinas de Apply fazem **preflight do CDP** e ficam em standby (heartbeat no
 log) até o Chrome já logado responder em `http://127.0.0.1:9222/json/version`. Elas reaproveitam
@@ -111,8 +114,10 @@ Se o CDP não responder em `cdp_wait_seconds` (padrão 1800s), nenhuma vaga é a
 
 ```powershell
 $env:AI_JOB_DATABASE_URL = 'postgresql+psycopg://jobs:<senha>@10.10.10.2:5433/jobs'
-.\.venv\Scripts\python -m src.cli application-serve
+# Necessário: consome a autorização da PWA e faz preparar + enviar no Chrome logado.
 .\.venv\Scripts\python -m src.cli apply-submit-serve --interval 30
+# Opcional: apenas preenche/forma o PENDING_APPROVAL para revisão prévia das respostas.
+.\.venv\Scripts\python -m src.cli application-serve
 ```
 
 Os prints por step e a confirmação ficam em `data/evidence/<job_id>/` em **WebP** (fallback

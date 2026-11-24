@@ -39,8 +39,14 @@ def submit_preflight(
     """Revalidações determinísticas feitas novamente no processo de envio."""
     if approval.status != "APPROVED":
         return "aprovação não está APPROVED"
-    if job.status not in {JobStatus.PENDING_APPROVAL, JobStatus.APPLYING}:
-        return f"vaga em status {job.status.value}; esperava PENDING_APPROVAL"
+    # QUALIFIED entra quando o operador autoriza direto pela PWA: o próprio
+    # submit() prepara o formulário e envia, sem etapa anterior de approve.
+    if job.status not in {
+        JobStatus.QUALIFIED,
+        JobStatus.PENDING_APPROVAL,
+        JobStatus.APPLYING,
+    }:
+        return f"vaga em status {job.status.value}; esperava QUALIFIED/PENDING_APPROVAL"
     if repo.has_application_for(job.id):
         return "já existe candidatura registrada"
 

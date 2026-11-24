@@ -27,7 +27,7 @@ from ..agents.qualification import (
 )
 from ..core.config import Settings
 from ..core.state import JobStatus
-from ..models.domain import JobOpportunity
+from ..models.domain import ApprovalRequest, JobOpportunity
 from ..storage.database import Repository
 from ..storage.evidence_store import (
     EVIDENCE_SUFFIXES,
@@ -99,6 +99,82 @@ def _fresh_evidence(
         settings.resolve("data/evidence"), retention_days=dias, job_id=job_id
     )
     return [item for item in itens if not is_expired(item, cutoff=cutoff, retention_days=dias)]
+
+
+def can_authorize_apply(
+    job: JobOpportunity,
+    approval: ApprovalRequest | None,
+    *,
+    application_exists: bool = False,
+    automation_error: str = "",
+) -> bool:
+    """O botão da PWA é a própria autorização para o agente fazer tudo.
+
+    Não exige formulário preparado: basta uma vaga classificada para aplicar,
+    sem candidatura registrada e sem automação em andamento/falha. A preparação
+    do formulário acontece dentro do envio, no Chrome logado, após este clique.
+    """
+    if automation_error or job.status == JobStatus.FAILED:
+        return False
+    if job.status not in {JobStatus.QUALIFIED, JobStatus.PENDING_APPROVAL}:
+        return False
+    if job.has_applied or application_exists:
+        return False
+    # APPROVED aguardando o worker não precisa de outro clique; REJECTED já foi
+    # decidido pelo operador. Um novo interesse recria a aprovação.
+    return approval is None or approval.status == "PENDING"
+
+
+def record_review_action(
+    repo: Repository,
+    job: JobOpportunity,
+    action: str,
+    payload: dict[str, Any] | None = None,
+    checks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persiste o clique da PWA e publica o autorização para o worker de Apply.
+
+    Quando não há formulário preparado, cria uma aprovação mínima (sem respostas)
+    já aprovada. O ``submit()`` preenche todos os campos no próprio envio.
+    """
+    payload = payload or {}
+    checks = checks or {}
+    atual = repo.get_approval_for_job(job.id)
+    if atual is None or atual.status == "REJECTED":
+        aprovacao = ApprovalRequest(
+            trace_id=job.trace_id,
+            opportunity_id=job.id,
+            company=job.company,
+            title=job.title,
+            score=job.score,
+            summary=job.analysis.summary if job.analysis else "",
+        )
+        repo.create_approval(aprovacao)
+    else:
+        aprovacao = atual
+
+    repo.resolve_approval(aprovacao.id, action == "APPROVED")
+    if action == "REJECTED":
+        job.status = JobStatus.REJECTED_BY_FILTER
+        repo.update_job(job)
+    decisao = repo.record_review_decision(
+        job.id,
+        action,
+        approval_id=aprovacao.id,
+        reviewer="operator",
+        checks=checks,
+        note=str(payload.get("note", ""))[:500],
+    )
+    if action == "APPROVED":
+        # Handoff persistido entre processos: o worker local prepara + envia e
+        # revalida todas as condições antes de clicar em Submit.
+        repo.publish_agent_event(
+            "apply_submit",
+            "review.approved",
+            job.id,
+            {"approval_id": aprovacao.id, "review_decision_id": decisao["id"]},
+        )
+    return decisao
 
 
 def _serialize(value: Any) -> Any:
@@ -322,7 +398,12 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
         "review_decision": decision,
         "evidence": evidencias,
         "automation_error": automation_error or None,
-        "can_check": bool(approval and approval.status == "PENDING"),
+        "can_check": can_authorize_apply(
+            job,
+            approval,
+            application_exists=application is not None,
+            automation_error=automation_error,
+        ),
     }
 
 
@@ -518,11 +599,20 @@ class ReviewHandler(BaseHTTPRequestHandler):
         if job is None:
             self._error(HTTPStatus.NOT_FOUND, "vaga não encontrada")
             return
+        getter = getattr(repo, "get_application_for_job", None)
+        application = getter(job.id) if getter else None
+        erros = repo.failed_agent_events(AUTOMATION_CONSUMERS, job_id=job.id)
+        automation_error = erros[0]["error"] or erros[0]["event_type"] if erros else ""
         approval = repo.get_approval_for_job(job.id)
-        if approval is None or approval.status != "PENDING":
+        if not can_authorize_apply(
+            job,
+            approval,
+            application_exists=application is not None,
+            automation_error=automation_error,
+        ):
             self._error(
                 HTTPStatus.CONFLICT,
-                "esta vaga ainda não tem formulário preparado pelo agente; aguarde o application-serve",
+                "esta vaga não está autorizável (já enviada, em andamento, recusada ou com erro)",
             )
             return
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -541,27 +631,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 HTTPStatus.CONFLICT,
             )
             return
-        repo.resolve_approval(approval.id, action == "APPROVED")
-        if action == "REJECTED":
-            job.status = JobStatus.REJECTED_BY_FILTER
-            repo.update_job(job)
-        decision = repo.record_review_decision(
-            job.id,
-            action,
-            approval_id=approval.id,
-            reviewer="operator",
-            checks=checks,
-            note=str(payload.get("note", ""))[:500],
-        )
-        if action == "APPROVED":
-            # Handoff persists across processes: the local submit worker claims
-            # this event and re-runs every deterministic check before sending.
-            repo.publish_agent_event(
-                "apply_submit",
-                "review.approved",
-                job.id,
-                {"approval_id": approval.id, "review_decision_id": decision["id"]},
-            )
+        decision = record_review_action(repo, job, action, payload, checks)
         self._json({"ok": True, "decision": decision})
 
 
