@@ -256,7 +256,7 @@ def test_service_worker_is_network_first_and_versioned() -> None:
     """Cache antigo não pode prender o navegador em uma versão anterior do filtro."""
     source = (review.STATIC_DIR / "sw.js").read_text(encoding="utf-8")
 
-    assert "const CACHE = 'review-pwa-v5'" in source
+    assert "const CACHE = 'review-pwa-v6'" in source
     fetch_at = source.index("fetch(event.request)")
     cached_at = source.index("caches.match(event.request)")
     assert fetch_at < cached_at

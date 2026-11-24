@@ -30,6 +30,8 @@ from ..storage.database import Repository
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_CURRENCIES = {"USD", "EUR"}
+EVIDENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
 
 # Ordem fixa da interface. ``all`` é apenas filtro, nunca classificação de vaga.
 BUCKETS: tuple[tuple[str, str], ...] = (
@@ -53,6 +55,28 @@ def _settings() -> Settings:
 
 def _repo() -> Repository:
     return Repository()
+
+
+def _evidence_root() -> Path:
+    return _settings().resolve("data/evidence")
+
+
+def resolve_evidence_path(job_id: str, filename: str) -> Path | None:
+    """Valida o caminho da evidência e bloqueia travessia/symlink."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id or ""):
+        return None
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", filename or "")
+        or Path(filename).suffix.lower() not in EVIDENCE_SUFFIXES
+    ):
+        return None
+    base = _evidence_root().resolve()
+    alvo = (base / job_id / filename).resolve()
+    if base not in alvo.parents or not alvo.is_file():
+        return None
+    if alvo.stat().st_size > EVIDENCE_MAX_BYTES:
+        return None
+    return alvo
 
 
 def _serialize(value: Any) -> Any:
@@ -249,6 +273,17 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
     decision = repo.get_review_decision_for_job(job.id)
     erros = repo.failed_agent_events(AUTOMATION_CONSUMERS, job_id=job.id)
     automation_error = erros[0]["error"] or erros[0]["event_type"] if erros else ""
+    application_getter = getattr(repo, "get_application_for_job", None)
+    application = application_getter(job.id) if application_getter else None
+    evidencias: list[dict[str, Any]] = [
+        _serialize(item) for item in (application.evidence if application else [])
+    ]
+    vistos = {str(item.get("path", "")) for item in evidencias}
+    checagem = (decision or {}).get("checks") or {}
+    for item in checagem.get("evidence") or []:
+        if str(item.get("path", "")) not in vistos:
+            evidencias.append(_serialize(item))
+            vistos.add(str(item.get("path", "")))
     return {
         "job": _serialize(job),
         "bucket": _bucket(
@@ -261,6 +296,7 @@ def job_detail(job_id: str) -> dict[str, Any] | None:
         "missing_core": missing_core_technologies(job),
         "approval": _serialize(approval) if approval else None,
         "review_decision": decision,
+        "evidence": evidencias,
         "automation_error": automation_error or None,
         "can_check": bool(approval and approval.status == "PENDING"),
     }
@@ -393,6 +429,19 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 )
             except Exception as exc:  # pragma: no cover
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            return
+        if path.startswith("/api/evidence/"):
+            partes = path.removeprefix("/api/evidence/").split("/")
+            if len(partes) != 2:
+                self._error(HTTPStatus.BAD_REQUEST, "evidência inválida")
+                return
+            job_id, nome = partes
+            alvo = resolve_evidence_path(job_id, nome)
+            if alvo is None:
+                self._error(HTTPStatus.NOT_FOUND, "evidência não encontrada")
+                return
+            tipo = mimetypes.guess_type(alvo.name)[0] or "application/octet-stream"
+            self._send(HTTPStatus.OK, alvo.read_bytes(), tipo)
             return
         if path.startswith("/api/jobs/"):
             job_id = path.removeprefix("/api/jobs/")

@@ -182,6 +182,33 @@ body {
   font-size: 12px;
 }
 
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.evidence {
+  margin: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px;
+}
+.evidence-link { display: block; }
+.evidence img {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--bg);
+}
+.evidence figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-word;
+}
+
 .checks { display: grid; gap: 6px; }
 .check {
   display: flex;

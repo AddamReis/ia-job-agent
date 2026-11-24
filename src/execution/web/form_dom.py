@@ -6,8 +6,10 @@ máquina; o preenchimento usa apenas o perfil local.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +107,16 @@ _CONFIRM_MARKS = (
     "inscricao enviada", "seu pedido foi enviado", "your application was submitted",
 )
 _BLOCK_MARKS = ("captcha", "verificação", "verificacao", "unusual activity", "atividade incomum")
+
+_NEXT_LABELS = (
+    "Next", "Next step", "Continue", "Continuar", "Próximo", "Proximo",
+    "Avançar", "Avancar", "Seguinte",
+)
+# Rótulos de avanço nunca podem confundir com Submit/Review final.
+_SUBMIT_WORDS = (
+    "submit", "enviar candidatura", "enviar", "aplicar", "review application",
+    "revisar candidatura", "finalizar",
+)
 
 _UPLOAD_LABELS = (
     "Carregar currículo", "Carregar curriculo", "Anexar currículo",
@@ -294,6 +306,84 @@ def click_submit(page: Any, label: str = "") -> bool:
         except Exception:
             continue
     return False
+
+
+def next_step_label(page: Any) -> str:
+    """Rótulo de avanço de step, sem confundir com o Submit final."""
+    for text in _NEXT_LABELS:
+        lowered = text.lower()
+        if any(mark in lowered for mark in _SUBMIT_WORDS):
+            continue
+        pattern = re.compile(rf"\b{re.escape(text)}\b", re.I)
+        for make_locator in (
+            lambda p=pattern: page.get_by_role("button", name=p),
+            lambda p=pattern: page.locator(f'button:has-text("{text}")'),
+        ):
+            try:
+                locator = make_locator()
+                if locator.count() == 0:
+                    continue
+                target = locator.first
+                if hasattr(target, "is_visible") and not target.is_visible():
+                    continue
+                return text
+            except Exception:
+                continue
+    return ""
+
+
+def click_next(page: Any, label: str = "") -> bool:
+    """Avança para o próximo step preenchido. Nunca clica em Submit."""
+    text = label or next_step_label(page)
+    if not text or any(mark in text.lower() for mark in _SUBMIT_WORDS):
+        return False
+    pattern = re.compile(rf"\b{re.escape(text)}\b", re.I)
+    for make_locator in (
+        lambda: page.get_by_role("button", name=pattern),
+        lambda: page.locator(f'button:has-text("{text}")'),
+    ):
+        try:
+            locator = make_locator()
+            if locator.count() == 0:
+                continue
+            locator.first.click()
+            log_event("browser_apply_step_advanced", label=text)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def capture_screenshot(
+    page: Any,
+    directory: str | Path,
+    *,
+    step: int,
+    kind: str,
+    label: str = "",
+) -> dict[str, Any]:
+    """Salva um print local e devolve metadados com hash para anexar à vaga."""
+    if kind not in {"step", "confirmation"}:
+        raise ValidationError(f"tipo de evidência desconhecido: {kind}")
+    destino = Path(directory)
+    destino.mkdir(parents=True, exist_ok=True)
+    safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_")[:40]
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    filename = f"step{int(step):02d}_{kind}_{stamp}"
+    if safe_label:
+        filename += f"_{safe_label}"
+    path = destino / f"{filename}.png"
+    payload = page.screenshot(path=str(path), full_page=False)
+    if not isinstance(payload, (bytes, bytearray)) or not payload:
+        payload = path.read_bytes()
+    return {
+        "step": int(step),
+        "kind": kind,
+        "label": label[:200],
+        "path": path.as_posix(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "created_at": datetime.now().isoformat(),
+    }
 
 
 def submission_state(page: Any) -> str:

@@ -306,6 +306,24 @@ class AnswerRecord(BaseModel):
     value_redacted: str = "<preenchido>"
     required: bool = False
     category: str = "general"
+    # Formulários paginados podem repetir a mesma assinatura em steps distintos.
+    step: int = 1
+    step_label: str = ""
+
+
+class ApplicationEvidence(BaseModel):
+    """Print local de um step preenchido ou da confirmação final do envio.
+
+    O arquivo fica em ``data/evidence/<job_id>/``; o banco guarda apenas o
+    caminho relativo e o hash, para não inchar o Postgres com BLOB.
+    """
+
+    step: int
+    kind: Literal["step", "confirmation"] = "step"
+    label: str = ""
+    path: str
+    sha256: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
 
 
 class Application(BaseModel):
@@ -320,6 +338,7 @@ class Application(BaseModel):
     resume_path: str = ""
     portal_url: str = ""
     answers: list[AnswerRecord] = Field(default_factory=list)
+    evidence: list[ApplicationEvidence] = Field(default_factory=list)
     result: str = ""
     notes: str = ""
     success_feedback: str = ""

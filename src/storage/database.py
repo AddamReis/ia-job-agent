@@ -1014,6 +1014,18 @@ class Repository:
                 )
             )
 
+    def get_application_for_job(self, job_id: str) -> Application | None:
+        """Última candidatura registrada para a vaga (inclui evidências)."""
+        stmt = (
+            select(ApplicationRow)
+            .where(ApplicationRow.opportunity_id == job_id)
+            .order_by(ApplicationRow.applied_at.desc())
+            .limit(1)
+        )
+        with self.session() as session:
+            row = session.execute(stmt).scalar_one_or_none()
+            return Application.model_validate(json.loads(row.data)) if row else None
+
     def list_applications(
         self, limit: int = 100, trace_id: str | None = None
     ) -> list[Application]:
@@ -1327,6 +1339,15 @@ class Repository:
             row = session.get(ApprovalRow, approval_id)
             return ApprovalRequest.model_validate(json.loads(row.data)) if row else None
 
+    def update_approval(self, approval: ApprovalRequest) -> None:
+        """Atualiza respostas de uma aprovação PENDING já preparada."""
+        with self.session() as session:
+            row = session.get(ApprovalRow, approval.id)
+            if row is None:
+                return
+            row.status = approval.status
+            row.data = _dump(approval)
+
     def resolve_approval(self, approval_id: str, approved: bool) -> ApprovalRequest | None:
         with self.session() as session:
             row = session.get(ApprovalRow, approval_id)
@@ -1438,6 +1459,38 @@ class Repository:
                 "decision": row.decision,
                 "reviewer": row.reviewer,
                 "checks": json.loads(row.checks or "{}"),
+                "note": row.note,
+                "created_at": row.created_at,
+            }
+
+    def attach_evidence_to_review_decision(
+        self, decision_id: str, evidence: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Anexa os prints ao check aprovado, sem alterar os rechecks gravados.
+
+        As evidências ficam em ``checks.evidence``: evita ALTER TABLE em Postgres
+        e mantém a auditoria original intacta.
+        """
+        with self.session() as session:
+            row = session.get(ReviewDecisionRow, decision_id)
+            if row is None:
+                return None
+            checks = json.loads(row.checks or "{}")
+            atual = list(checks.get("evidence") or [])
+            conhecidos = {str(item.get("path")) for item in atual}
+            for item in evidence:
+                if str(item.get("path", "")) not in conhecidos:
+                    atual.append(item)
+                    conhecidos.add(str(item.get("path", "")))
+            checks["evidence"] = atual
+            row.checks = json.dumps(checks, ensure_ascii=False)
+            return {
+                "id": row.id,
+                "opportunity_id": row.opportunity_id,
+                "approval_id": row.approval_id,
+                "decision": row.decision,
+                "reviewer": row.reviewer,
+                "checks": checks,
                 "note": row.note,
                 "created_at": row.created_at,
             }

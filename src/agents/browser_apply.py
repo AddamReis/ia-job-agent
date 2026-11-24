@@ -16,7 +16,7 @@ from enum import Enum
 from urllib.parse import parse_qs, unquote, urlparse
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..core.config import Settings
 from ..core.errors import BlockedByPlatformError, HumanActionRequired, ValidationError
@@ -27,9 +27,12 @@ from ..execution.forms.answers import AnswerResolver
 from ..execution.forms.field import FormField
 from ..execution.web.linkedin_public import is_remote_public
 from ..execution.web.form_dom import (
+    capture_screenshot,
+    click_next,
     click_submit,
     ensure_resume_uploaded,
     fill_field,
+    next_step_label,
     snapshot_form,
     submission_state,
 )
@@ -39,6 +42,7 @@ from ..execution.web.site_patterns import SitePatternStore, domain_of
 from ..models.domain import (
     AnswerRecord,
     Application,
+    ApplicationEvidence,
     ApprovalRequest,
     CandidateProfile,
     JobOpportunity,
@@ -72,6 +76,7 @@ _ALREADY_APPLIED_MARKERS = (
     "aplicación enviada", "aplicacion enviada", "candidatura enviada",
     "ya te has postulado", "you already applied", "ver candidatura",
 )
+_MAX_FORM_STEPS = 8
 
 
 def _is_login_page(url: str, text: str) -> bool:
@@ -116,11 +121,27 @@ class FillDecision:
 
 
 @dataclass
+class PreparedStep:
+    """Um passo do formulário, com decisões recalculadas na abertura atual."""
+
+    number: int
+    url: str
+    domain: str
+    decisions: list[FillDecision]
+    next_label: str = ""
+
+
+@dataclass
 class PreparedForm:
     url: str
     domain: str
     decisions: list[FillDecision]
+    steps: list[PreparedStep] | None = None
     submit_label: str = ""
+
+    def __post_init__(self) -> None:
+        if self.steps is None:
+            self.steps = []
 
 
 @dataclass
@@ -176,6 +197,88 @@ class BrowserApplyAgent:
         self.portal_credentials = PortalCredentialStore()
         self.patterns = SitePatternStore(settings.resolve("data/site_patterns.json"))
         self._pending: dict[str, PreparedForm] = {}
+
+    @staticmethod
+    def _evidence_dir(job: JobOpportunity) -> Path:
+        """Diretório relativo (dentro de data/) das evidências da vaga."""
+        seguro = re.sub(r"[^A-Za-z0-9_-]", "_", job.id or "sem-id")[:64]
+        return Path("data/evidence") / seguro
+
+    @staticmethod
+    def _ensure_not_blocked(page: Any) -> None:
+        if submission_state(page) == "blocked":
+            raise BlockedByPlatformError(
+                "verificação/CAPTCHA no formulário; o agente não interage"
+            )
+
+    def _walk_steps(
+        self,
+        page: Any,
+        job: JobOpportunity,
+        *,
+        on_step: Callable[[PreparedStep, Any, dict[str, Any]], None] | None = None,
+        allow_submit: bool = False,
+    ) -> list[PreparedStep]:
+        """ Percorre steps paginados recalculando campos na abertura atual.
+
+        ``snapshot_form`` reatribui ``data-agent-field`` a cada chamada; por isso
+        as decisões de cada step são sempre reconstruídas aqui. O retorno é a
+        lista de steps com os índices válidos para esta página.
+        """
+        steps: list[PreparedStep] = []
+        for number in range(1, _MAX_FORM_STEPS + 1):
+            self._ensure_not_blocked(page)
+            snapshot = snapshot_form(page)
+            if number == 1:
+                snapshot = self._handle_resume(page, snapshot)
+                self._ensure_not_blocked(page)
+            decisions = self._decide(snapshot)
+            rotulo = next_step_label(page)
+            url = str(snapshot.get("url", "") or "")
+            step = PreparedStep(
+                number=number,
+                url=url,
+                domain=domain_of(url),
+                decisions=decisions,
+                next_label=rotulo,
+            )
+            if on_step is not None:
+                on_step(step, page, snapshot)
+            steps.append(step)
+
+            if not rotulo or not click_next(page, rotulo):
+                return steps
+            page.wait_for_timeout(1200)
+            state = submission_state(page)
+            if state == "blocked":
+                raise BlockedByPlatformError(
+                    "verificação/CAPTCHA ao avançar de step; o agente não interage"
+                )
+            if state == "submitted":
+                if allow_submit:
+                    return steps
+                raise ValidationError("formulário foi enviado antes da aprovação humana")
+        raise ValidationError(
+            f"formulário excedeu {_MAX_FORM_STEPS} steps; requer inspeção humana"
+        )
+
+    @staticmethod
+    def _answers_from_steps(steps: list[PreparedStep]) -> list[AnswerRecord]:
+        answers: list[AnswerRecord] = []
+        for step in steps:
+            for decision in step.decisions:
+                answers.append(
+                    AnswerRecord(
+                        field=decision.signature,
+                        source=decision.source,
+                        value_redacted="<preenchido>",
+                        required=decision.required,
+                        category=decision.category,
+                        step=step.number,
+                        step_label=f"Step {step.number}",
+                    )
+                )
+        return answers
 
     @staticmethod
     def job_url(job: JobOpportunity) -> str:
@@ -846,22 +949,25 @@ class BrowserApplyAgent:
             if observation.already_applied or self._detect_already_applied(page, snapshot):
                 self._record_existing_application(job, snapshot, observation)
                 return None
-            snapshot = self._handle_resume(page, snapshot)
-            decisions = self._decide(snapshot)
-            if not decisions:
+            steps = self._walk_steps(page, job)
+            if not any(step.decisions for step in steps):
                 raise HumanActionRequired(
                     "formulário", "nenhum campo preenchível encontrado; requer inspeção humana"
                 )
             prepared = PreparedForm(
-                url=str(snapshot.get("url", "")),
-                domain=domain_of(str(snapshot.get("url", ""))),
-                decisions=decisions,
+                url=steps[0].url,
+                domain=steps[0].domain,
+                decisions=[decision for step in steps for decision in step.decisions],
+                steps=steps,
             )
         finally:
             self.browser.close_tab(page)
 
+        answers = self._answers_from_steps(steps)
         if existing is not None and existing.status == "PENDING":
             approval = existing
+            approval.answers = answers
+            self.repo.update_approval(approval)
         else:
             approval = ApprovalRequest(
                 trace_id=job.trace_id,
@@ -870,16 +976,7 @@ class BrowserApplyAgent:
                 title=job.title,
                 score=job.score,
                 summary=job.analysis.summary if job.analysis else "",
-                answers=[
-                    AnswerRecord(
-                        field=d.signature,
-                        source=d.source,
-                        value_redacted="<preenchido>",
-                        required=d.required,
-                        category=d.category,
-                    )
-                    for d in decisions
-                ],
+                answers=answers,
             )
             self.repo.create_approval(approval)
         self._pending[job.id] = prepared
@@ -888,7 +985,8 @@ class BrowserApplyAgent:
         log_event(
             "browser_apply_prepared",
             company=job.company,
-            fields=len(decisions),
+            fields=len(answers),
+            steps=len(steps),
             domain=prepared.domain,
             approval_id=approval.id,
         )
@@ -935,43 +1033,99 @@ class BrowserApplyAgent:
         self.repo.update_job(job)
 
         page, snapshot, observation = self._open(job)
-        self._record_easy_apply(job, observation)
         try:
+            self._record_easy_apply(job, observation)
+            snapshot = snapshot_form(page)
+            if observation.already_applied or self._detect_already_applied(page, snapshot):
+                self._record_existing_application(job, snapshot, observation)
+                return None
             self._recheck_remote(job, snapshot)
-            snapshot = self._handle_resume(page, snapshot)
-            decisions = self._decide(snapshot)
-            prepared = self._pending.get(job.id)
-            url = str(snapshot.get("url", "") or "")
-            domain = domain_of(url)
-            if prepared is not None and prepared.domain == domain:
-                prepared.decisions = decisions
-                prepared.url = url or prepared.url
-            else:
-                prepared = PreparedForm(url=url, domain=domain, decisions=decisions)
-            filled = 0
-            for decision in decisions:
-                if fill_field(page, decision.index, decision.kind, decision.value):
-                    filled += 1
-            log_event("browser_apply_filled", fields=filled, domain=prepared.domain)
 
-            if not click_submit(page):
-                raise ValidationError("botão de envio não encontrado no formulário")
-            page.wait_for_timeout(2500)
+            # Só campos que estavam na aprovação podem ser preenchidos. A
+            # assinatura é a chave estável; o índice é recalculado por step.
+            permitidos_por_step: dict[int, set[str]] = {}
+            for answer in stored.answers:
+                permitidos_por_step.setdefault(answer.step or 1, set()).add(answer.field)
+            tem_aprovacao = bool(permitidos_por_step)
+
+            evidencias: list[ApplicationEvidence] = []
+            preenchidos = 0
+
+            def preencher_e_capturar(
+                step: PreparedStep, pagina: Any, _snapshot: dict[str, Any]
+            ) -> None:
+                nonlocal preenchidos
+                permitidas = permitidos_por_step.get(step.number)
+                selecionadas = [
+                    decision
+                    for decision in step.decisions
+                    if not tem_aprovacao
+                    or permitidas is None
+                    or decision.signature in permitidas
+                ]
+                step.decisions = selecionadas
+                for decision in selecionadas:
+                    if fill_field(pagina, decision.index, decision.kind, decision.value):
+                        preenchidos += 1
+                self._ensure_not_blocked(pagina)
+                metadados = capture_screenshot(
+                    pagina,
+                    self._evidence_dir(job),
+                    step=step.number,
+                    kind="step",
+                    label=f"Step {step.number} · {len(selecionadas)} campo(s)",
+                )
+                evidencias.append(ApplicationEvidence.model_validate(metadados))
+
+            steps = self._walk_steps(page, job, on_step=preencher_e_capturar, allow_submit=True)
+            prepared = PreparedForm(
+                url=steps[0].url,
+                domain=steps[0].domain or domain_of(str(snapshot.get("url", "") or "")),
+                decisions=[decision for step in steps for decision in step.decisions],
+                steps=steps,
+            )
+            log_event(
+                "browser_apply_filled",
+                fields=preenchidos,
+                steps=len(steps),
+                domain=prepared.domain,
+            )
+
             state = submission_state(page)
             if state == "blocked":
                 raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
             if state != "submitted":
-                # Alguns portais exigem Review antes de Submit.
-                click_submit(page, "Review application")
-                page.wait_for_timeout(1200)
-                click_submit(page)
+                if not click_submit(page):
+                    raise ValidationError("botão de envio não encontrado no formulário")
                 page.wait_for_timeout(2500)
                 state = submission_state(page)
+                if state == "blocked":
+                    raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
+                if state != "submitted":
+                    # Alguns portais exigem Review antes de Submit.
+                    click_submit(page, "Review application")
+                    page.wait_for_timeout(1200)
+                    click_submit(page)
+                    page.wait_for_timeout(2500)
+                    state = submission_state(page)
+                    if state == "blocked":
+                        raise BlockedByPlatformError(
+                            "verificação/CAPTCHA durante a candidatura"
+                        )
             if state != "submitted":
                 job.status = JobStatus.FAILED
                 self.repo.update_job(job)
                 raise ValidationError("envio não confirmado pelo portal")
 
+            metadados = capture_screenshot(
+                page,
+                self._evidence_dir(job),
+                step=steps[-1].number,
+                kind="confirmation",
+                label="Confirmação de envio",
+            )
+            evidencias.append(ApplicationEvidence.model_validate(metadados))
+            domain = prepared.domain
             self._handle_post_submit_assessment(page, domain)
 
             application = Application(
@@ -983,16 +1137,8 @@ class BrowserApplyAgent:
                 channel=job.channel,
                 resume_path=self.profile.documents.get("resume", ""),
                 portal_url=prepared.url,
-                answers=[
-                    AnswerRecord(
-                        field=d.signature,
-                        source=d.source,
-                        value_redacted="<preenchido>",
-                        required=d.required,
-                        category=d.category,
-                    )
-                    for d in prepared.decisions
-                ],
+                answers=self._answers_from_steps(steps),
+                evidence=evidencias,
             )
             self.repo.record_application(application)
             job.status = JobStatus.SUBMITTED

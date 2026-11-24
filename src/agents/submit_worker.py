@@ -104,6 +104,7 @@ class SubmitWorker:
             payload = evento.get("payload") or {}
             job = self.repo.get_job(job_id) if job_id else None
             approval_id = str(payload.get("approval_id") or "")
+            decision_id = str(payload.get("review_decision_id") or "")
             approval = (
                 self.repo.get_approval(approval_id)
                 if approval_id
@@ -149,6 +150,23 @@ class SubmitWorker:
                 )
                 counters["blocked"] += 1
                 continue
+
+            anexar = getattr(self.repo, "attach_evidence_to_review_decision", None)
+            if decision_id and anexar is not None:
+                try:
+                    anexar(
+                        decision_id,
+                        [item.model_dump(mode="json") for item in application.evidence],
+                    )
+                except Exception as exc:
+                    # A candidatura já está gravada; a PWA também lê evidências
+                    # diretamente do Application. Não transforma sucesso em erro.
+                    log_event(
+                        "submit_worker_evidence_attach_failed",
+                        job_id=job_id,
+                        decision_id=decision_id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
 
             self.repo.ack_agent_event(event_id)
             counters["submitted"] += 1

@@ -224,8 +224,37 @@ function renderDetail(data) {
   root.append(section('Formulário preparado'));
   const answers = (data.approval && data.approval.answers) || [];
   root.append(kv(answers.length
-    ? answers.map((ans) => [ans.field || 'campo', `${ans.value_redacted || '—'} (${ans.source || '—'})`])
+    ? answers.map((ans) => [
+        `Step ${ans.step || 1} · ${ans.field || 'campo'}`,
+        `${ans.value_redacted || '—'} (${ans.source || '—'})`,
+      ])
     : [['Estado', data.approval ? 'sem respostas registradas' : 'ainda não preparado']]));
+
+  const evidences = data.evidence || [];
+  if (evidences.length) {
+    root.append(section('Evidências do Apply'));
+    const grid = el('div', 'evidence-grid');
+    for (const item of evidences) {
+      const nome = String(item.path || '').split('/').pop();
+      if (!nome) continue;
+      const href = `/api/evidence/${encodeURIComponent(job.id)}/${encodeURIComponent(nome)}`;
+      const link = el('a', 'evidence-link');
+      link.href = href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      const img = el('img');
+      img.src = href;
+      img.alt = item.label || `Evidência step ${item.step || 1}`;
+      img.loading = 'lazy';
+      link.append(img);
+      const legenda = el('figcaption', null,
+        `${item.kind === 'confirmation' ? 'Confirmação' : `Step ${item.step || 1}`} · ${item.label || nome}`);
+      const figure = el('figure', 'evidence');
+      figure.append(link, legenda);
+      grid.append(figure);
+    }
+    root.append(grid);
+  }
 
   if (job.url) {
     root.append(section('Vaga'));
