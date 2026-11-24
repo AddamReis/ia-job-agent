@@ -606,6 +606,11 @@ class Repository:
             ),
             decision.in_(["SKIP", "REJECT"]),
         )
+        # Descobertas/analisadas ainda não viraram decisão: ficam apenas em
+        # Todas, para não aparecerem como "Aguardando Aprovação".
+        pending_cond = JobRow.status.in_(
+            [JobStatus.DISCOVERED.value, JobStatus.ANALYZED.value]
+        )
 
         def bucket_condition(key: str) -> Any | None:
             # Mesma precedência de review_app._bucket: erro → enviado → recusado.
@@ -616,7 +621,7 @@ class Repository:
             if key == "rejected":
                 return and_(~error_cond, ~sent_cond, rejected_cond)
             if key == "approval":
-                return and_(~error_cond, ~sent_cond, ~rejected_cond)
+                return and_(~error_cond, ~sent_cond, ~rejected_cond, ~pending_cond)
             return None
 
         def count_for(key: str) -> int:

@@ -74,6 +74,23 @@ def test_query_review_jobs_text_order_and_pagination(tmp_path) -> None:
     assert repo.query_review_jobs(query="%")["total"] == 0
 
 
+def test_query_review_jobs_keeps_unclassified_out_of_approval(tmp_path) -> None:
+    repo = Repository(tmp_path / "agent.db")
+    _add_job(repo, "descoberta", JobStatus.DISCOVERED)
+    _add_job(repo, "analisada", JobStatus.ANALYZED)
+    _add_job(repo, "pronta", JobStatus.QUALIFIED)
+
+    result = repo.query_review_jobs()
+
+    assert [job.id for job in result["items"]] == ["pronta"]
+    assert result["counts"] == {
+        "approval": 1, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
+    }
+    assert [job.id for job in repo.query_review_jobs(bucket="all")["items"]] == [
+        "analisada", "descoberta", "pronta"
+    ]
+
+
 def test_query_review_jobs_buckets_search_in_analysis_and_error_precedence(tmp_path) -> None:
     repo = Repository(tmp_path / "agent.db")
     _add_job(repo, "wait", JobStatus.QUALIFIED, created_at="2026-11-23T10:00:00")

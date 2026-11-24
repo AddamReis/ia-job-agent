@@ -86,6 +86,10 @@ def _bucket(
         job.qualification is not None and job.qualification.decision in {"SKIP", "REJECT"}
     ):
         return "rejected"
+    # Ainda sem classificação não é "aguardando aprovação": aparece só em Todas
+    # para não inflar a fila enquanto o classificador trabalha.
+    if job.status in {JobStatus.DISCOVERED, JobStatus.ANALYZED}:
+        return "all"
     # Inclui QUALIFIED/PENDING_APPROVAL (dependem do check), WAITING_DEVICE e
     # REQUIRES_HUMAN_ACTION (dependem de ação humana) e APPLYING (em andamento).
     return "approval"

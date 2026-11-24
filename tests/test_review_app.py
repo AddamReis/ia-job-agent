@@ -144,6 +144,22 @@ def test_bucket_order_counts_and_default(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result["labels"]["all"] == "Todas"
 
 
+def test_unclassified_jobs_stay_only_in_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = [
+        _job("discovered", JobStatus.DISCOVERED),
+        _job("analyzed", JobStatus.ANALYZED),
+        _job("ready", JobStatus.QUALIFIED),
+    ]
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo(jobs))
+
+    result = review.job_index()
+
+    assert result["counts"] == {
+        "approval": 1, "submitted": 0, "rejected": 0, "errors": 0, "all": 3
+    }
+    assert [item["id"] for item in result["items"]] == ["ready"]
+
+
 def test_failed_automation_wins_over_submitted(monkeypatch: pytest.MonkeyPatch) -> None:
     job = _job("sent", JobStatus.SUBMITTED, has_applied=True)
     monkeypatch.setattr(
