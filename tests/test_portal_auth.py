@@ -475,6 +475,42 @@ def test_agent_stops_on_legal_terms_without_human_evidence(
         agent._ensure_external_entry(Page())
 
 
+def test_invisible_captcha_on_login_does_not_hide_missing_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(monkeypatch, domain=PASSWORD_DOMAIN)
+    agent.browser = type("FakeBrowser", (), {"close_tab": lambda self, _p: None})()
+
+    class Page:
+        url = "https://careers.example.com/jobs/1/login"
+
+        def evaluate(self, script, *_args):
+            if "has_form" in script:
+                return {
+                    "url": self.url,
+                    "text": "Sign in",
+                    "buttons": [],
+                    "checkboxes": [],
+                    "has_form": True,
+                    "has_file": False,
+                    "blocked": True,
+                    "login": True,
+                    "passwords": 0,
+                }
+            return {}
+
+        def wait_for_timeout(self, _ms) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda p: {"url": p.url, "text": "Sign in"},
+    )
+
+    with pytest.raises(HumanActionRequired, match="login"):
+        agent._ensure_external_entry(Page())
+
+
 def test_google_oauth_stops_when_password_is_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

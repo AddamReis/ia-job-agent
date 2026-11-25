@@ -1170,10 +1170,16 @@ class BrowserApplyAgent:
     ) -> tuple[Any, dict[str, Any]]:
         """Lê a tela antes de agir: termos, login OAuth ou barreira humana."""
         estado = self._observe_screen(page)
-        if estado.get("blocked"):
+        # Um widget hCaptcha invisível no formulário de login não é barreira:
+        # o bloqueio real é a ausência de sessão. Resolver um desafio que não
+        # está renderizado só leva a um erro genérico e esconde a causa.
+        def login_sem_senha() -> bool:
+            return bool(estado.get("login")) and not int(estado.get("passwords") or 0)
+
+        if estado.get("blocked") and not login_sem_senha():
             self._resolve_challenge(page)
             estado = self._observe_screen(page)
-        if estado.get("blocked"):
+        if estado.get("blocked") and not login_sem_senha():
             raise BlockedByPlatformError("verificação/CAPTCHA na entrada do portal")
         settings = getattr(self, "settings", None)
         cfg = None
