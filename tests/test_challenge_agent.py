@@ -94,6 +94,9 @@ class FakeElementHandle:
     def get_attribute(self, _name: str) -> str:
         return ""
 
+    def screenshot(self, **_: object) -> bytes:
+        return b"jpeg-do-iframe"
+
 
 class FakeFrame:
     def __init__(
@@ -253,3 +256,32 @@ def test_captcha_de_texto_dentro_de_frame_e_preenchido() -> None:
 
     assert ChallengeAgent._fill_captcha_text(pagina, "DENTRO") is True
     assert frame.locators[seletor].filled == ["DENTRO"]
+
+
+def test_frame_challenge_tem_prioridade_e_clique_usa_seu_retangulo(tmp_path) -> None:
+    desafio = FakeFrame(
+        "https://newassets.hcaptcha.com/captcha#frame=challenge",
+        FakeElementHandle(
+            {"x": 10, "y": -9864, "width": 400, "height": 500},
+            {"x": 300, "y": 40, "width": 400, "height": 500},
+        ),
+    )
+    checkbox = FakeFrame(
+        "https://newassets.hcaptcha.com/captcha#frame=checkbox-invisible",
+        FakeElementHandle({"x": 400, "y": 50, "width": 300, "height": 80}, {}),
+    )
+    pagina = FakePage(
+        [_obs(captcha=True), _obs(captcha=True)] + [_obs()] * 6,
+        [checkbox, desafio],
+    )
+    pagina.frames.insert(0, pagina)
+    agente = ChallengeAgent(
+        FakeLLM(CaptchaSolution(kind="checkbox", points=[[0.5, 0.5]], confidence=0.9)),
+        FakeCredentials(),
+    )
+
+    foco = agente._focus_captcha_frame(pagina, _obs(captcha=True))
+    assert foco["frame"] is desafio
+    assert foco["box"] == {"x": 300, "y": 40, "width": 400, "height": 500}
+    assert agente.solve(pagina, evidence_dir=tmp_path) is True
+    assert (500.0, 290.0) in pagina.mouse.clicks

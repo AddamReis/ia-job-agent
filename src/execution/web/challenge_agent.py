@@ -194,6 +194,12 @@ class ChallengeAgent:
                 titulo = ""
             if _FRAME_CHALLENGE_RE.search(titulo):
                 candidatos.append(frame)
+        # hCaptcha expõe um iframe 'checkbox-invisible' e outro 'challenge'.
+        # O desafio visual/comportamental está no segundo; priorizá-lo evita
+        # capturar o formulário iCIMS por trás do widget.
+        candidatos.sort(
+            key=lambda frame: 0 if "frame=challenge" in str(getattr(frame, "url", "")).lower() else 1
+        )
         return candidatos
 
     @staticmethod
@@ -251,6 +257,9 @@ class ChallengeAgent:
             "strategy": "",
             "frames": 0,
             "frame_domain": "",
+            "frame": None,
+            "element": None,
+            "box": {},
         }
         dominio = self.domain_of(page)
         viewport = dict(obs.get("viewport") or {})
@@ -271,7 +280,14 @@ class ChallengeAgent:
             except Exception:
                 caixa = {}
             if self._in_viewport(caixa, viewport):
-                resultado.update(focused=True, strategy="visible", frame_domain=frame_domain)
+                resultado.update(
+                    focused=True,
+                    strategy="visible",
+                    frame_domain=frame_domain,
+                    frame=frame,
+                    element=elemento,
+                    box=caixa,
+                )
                 return resultado
             try:
                 elemento.scroll_into_view_if_needed()
@@ -280,7 +296,14 @@ class ChallengeAgent:
             except Exception:
                 caixa = {}
             if self._in_viewport(caixa, viewport):
-                resultado.update(focused=True, strategy="scrolled", frame_domain=frame_domain)
+                resultado.update(
+                    focused=True,
+                    strategy="scrolled",
+                    frame_domain=frame_domain,
+                    frame=frame,
+                    element=elemento,
+                    box=caixa,
+                )
                 log_event(
                     "challenge_frame_focused",
                     domain=dominio,
@@ -301,7 +324,14 @@ class ChallengeAgent:
             except Exception:
                 continue
             if self._in_viewport(caixa, viewport):
-                resultado.update(focused=True, strategy="pinned", frame_domain=frame_domain)
+                resultado.update(
+                    focused=True,
+                    strategy="pinned",
+                    frame_domain=frame_domain,
+                    frame=frame,
+                    element=elemento,
+                    box=caixa,
+                )
                 log_event(
                     "challenge_frame_focused",
                     domain=dominio,
@@ -450,14 +480,30 @@ class ChallengeAgent:
 
     # ---- CAPTCHA ----
 
-    def _screenshot(self, page: Any, evidence_dir: str | Path | None, tentativa: int) -> bytes:
+    def _screenshot(
+        self,
+        page: Any,
+        evidence_dir: str | Path | None,
+        tentativa: int,
+        element: Any = None,
+    ) -> bytes:
         payload = b""
-        try:
-            payload = bytes(
-                page.screenshot(type="jpeg", quality=self.image_quality, full_page=False)
-            )
-        except Exception:
-            payload = b""
+        # Capturar o iframe do desafio diretamente evita o formulário por trás
+        # do widget (o caso do hCaptcha na landing iCIMS da Avalara).
+        if element is not None:
+            try:
+                payload = bytes(
+                    element.screenshot(type="jpeg", quality=self.image_quality)
+                )
+            except Exception:
+                payload = b""
+        if not payload:
+            try:
+                payload = bytes(
+                    page.screenshot(type="jpeg", quality=self.image_quality, full_page=False)
+                )
+            except Exception:
+                payload = b""
         if evidence_dir is not None and payload:
             try:
                 destino = Path(evidence_dir)
@@ -481,7 +527,7 @@ class ChallengeAgent:
             atual = self.observe(page)
             if atual:
                 obs = atual
-        payload = self._screenshot(page, evidence_dir, tentativa)
+        payload = self._screenshot(page, evidence_dir, tentativa, foco.get("element"))
         if not payload:
             return False
         uri = "data:image/jpeg;base64," + base64.b64encode(payload).decode("ascii")
@@ -523,7 +569,7 @@ class ChallengeAgent:
         if solucao.kind == "text" and solucao.answer:
             aplicou = self._fill_captcha_text(page, solucao.answer)
         elif solucao.kind in {"checkbox", "image"}:
-            aplicou = self._click_points(page, solucao.points, obs)
+            aplicou = self._click_points(page, solucao.points, obs, foco.get("box"))
             if solucao.kind == "image":
                 self._click_verify(page)
         return aplicou
@@ -546,19 +592,37 @@ class ChallengeAgent:
         return False
 
     @staticmethod
-    def _click_points(page: Any, points: list[list[float]], obs: dict[str, Any]) -> bool:
+    def _click_points(
+        page: Any,
+        points: list[list[float]],
+        obs: dict[str, Any],
+        box: dict[str, Any] | None = None,
+    ) -> bool:
         viewport = obs.get("viewport") or {}
         largura = float(viewport.get("w") or 1280)
         altura = float(viewport.get("h") or 720)
+        # Quando a imagem veio do iframe, as coordenadas são relativas a ele.
+        if box:
+            try:
+                bx = float(box.get("x") or 0)
+                by = float(box.get("y") or 0)
+                bw = float(box.get("width") or 0)
+                bh = float(box.get("height") or 0)
+            except (TypeError, ValueError):
+                bx = by = bw = bh = 0.0
+        else:
+            bx = by = bw = bh = 0.0
         clicou = False
         for point in points[:12]:
             if len(point) != 2:
                 continue
-            x, y = point
-            if not (0 <= x <= 1 and 0 <= y <= 1):
+            px, py = point
+            if not (0 <= px <= 1 and 0 <= py <= 1):
                 continue
+            x = bx + px * bw if bw and bh else px * largura
+            y = by + py * bh if bw and bh else py * altura
             try:
-                page.mouse.click(x * largura, y * altura)
+                page.mouse.click(x, y)
                 clicou = True
                 page.wait_for_timeout(150)
             except Exception:
