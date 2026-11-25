@@ -96,10 +96,16 @@ class FakeElementHandle:
 
 
 class FakeFrame:
-    def __init__(self, url: str, elemento: FakeElementHandle) -> None:
+    def __init__(
+        self,
+        url: str,
+        elemento: FakeElementHandle,
+        parent_frame: "FakeFrame | None" = None,
+    ) -> None:
         self.url = url
         self.name = ""
         self._elemento = elemento
+        self.parent_frame = parent_frame
         self.locators: dict[str, FakeLocator] = {}
 
     def frame_element(self) -> FakeElementHandle:
@@ -210,6 +216,30 @@ def test_captcha_ja_visivel_nao_e_reposicionado() -> None:
 
     assert agente.solve(pagina) is True
     assert elemento.pinned is False
+
+
+def test_captcha_em_iframe_aninhado_fixa_pai_e_filho(tmp_path) -> None:
+    fora = {"x": 10, "y": -9864, "width": 480, "height": 620}
+    dentro = {"x": 0, "y": -1400, "width": 480, "height": 600}
+    visivel = {"x": 400, "y": 50, "width": 480, "height": 620}
+    externo = FakeFrame(
+        "https://portal.example.com/frame", FakeElementHandle(fora, visivel)
+    )
+    interno = FakeFrame(
+        "https://hcaptcha.com/1/challenge",
+        FakeElementHandle(dentro, visivel),
+        parent_frame=externo,
+    )
+    pagina = FakePage([_obs(captcha=True), _obs(captcha=True)] + [_obs()] * 6, [interno])
+    pagina.frames.insert(0, pagina)
+    agente = ChallengeAgent(
+        FakeLLM(CaptchaSolution(kind="text", answer="OK", confidence=0.9)),
+        FakeCredentials(),
+    )
+
+    assert agente.solve(pagina, evidence_dir=tmp_path) is True
+    assert externo._elemento.pinned is True
+    assert interno._elemento.pinned is True
 
 
 def test_captcha_de_texto_dentro_de_frame_e_preenchido() -> None:

@@ -215,6 +215,28 @@ class ChallengeAgent:
         centro_x, centro_y = x + largura / 2, y + altura / 2
         return 0 <= centro_x <= max_x and 0 <= centro_y <= max_y
 
+    @staticmethod
+    def _frame_chain(frame: Any) -> list[Any]:
+        """Elementos do frame desafiante até o iframe de topo da página.
+
+        hCaptcha costuma viver dentro de dois iframes. Fixar só o interno não
+        adianta: ele continua fora da tela porque o pai também está escondido.
+        """
+        cadeia: list[Any] = []
+        atual = frame
+        vistos: set[int] = set()
+        while atual is not None and id(atual) not in vistos:
+            vistos.add(id(atual))
+            try:
+                elemento = atual.frame_element()
+            except Exception:
+                break
+            if elemento is None:
+                break
+            cadeia.append(elemento)
+            atual = getattr(atual, "parent_frame", None)
+        return cadeia
+
     def _focus_captcha_frame(
         self, page: Any, obs: dict[str, Any]
     ) -> dict[str, Any]:
@@ -267,9 +289,14 @@ class ChallengeAgent:
                 )
                 return resultado
             try:
-                if not elemento.evaluate(_PIN_FRAME_JS):
+                cadeia = self._frame_chain(frame)
+                if not cadeia:
                     continue
-                page.wait_for_timeout(400)
+                # Pai primeiro: trazer o iframe de topo para o viewport carrega
+                # toda a árvore filha junto, inclusive o desafio final.
+                for ancestral in reversed(cadeia):
+                    ancestral.evaluate(_PIN_FRAME_JS)
+                page.wait_for_timeout(500)
                 caixa = elemento.bounding_box() or {}
             except Exception:
                 continue
