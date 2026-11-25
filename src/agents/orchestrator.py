@@ -23,6 +23,7 @@ from ..execution.forms.answers import AnswerResolver
 from ..execution.gmail.gmail_client import GmailClient
 from ..execution.profile.builder import (
     build_profile,
+    profile_human_evidence,
     profile_identity_evidence,
     profile_project_preferences,
 )
@@ -91,6 +92,14 @@ class Orchestrator:
         preferencias = profile_project_preferences(settings)
         if preferencias:
             self.profile.project_preferences = preferencias
+        # Evidência humana é fonte corrente: substitui regras antigas salvas no
+        # banco para que respostas negadas/alteradas não continuem valendo.
+        humanas = profile_human_evidence(settings)
+        self.profile.answer_rules = [
+            regra
+            for regra in self.profile.answer_rules
+            if str(getattr(regra, "category", "")) != "human_evidence"
+        ] + humanas
         self.repo.save_profile(self.profile)
 
         # Dois providers no mesmo DGX: o runner (MoE menor) faz extração e

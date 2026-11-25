@@ -97,6 +97,40 @@ def profile_project_preferences(settings: Settings) -> list[str]:
     return [str(item).strip() for item in (values or []) if str(item).strip()]
 
 
+def profile_human_evidence(settings: Settings) -> list[AnswerRule]:
+    """Regras sensíveis decididas uma a uma pelo operador, fora do git.
+
+    O perfil corrente vem do banco; esta função também é chamada pelo
+    Orchestrator para sincronizar o arquivo local com o perfil persistido.
+    """
+    arquivo = settings.resolve(settings.profile.human_evidence_file)
+    try:
+        brutas = (
+            json.loads(arquivo.read_text(encoding="utf-8")) if arquivo.exists() else []
+        )
+    except (OSError, ValueError) as exc:
+        log_event("human_evidence_file_error", error=type(exc).__name__)
+        return []
+    regras: list[AnswerRule] = []
+    for rule in brutas if isinstance(brutas, list) else []:
+        if not isinstance(rule, dict):
+            continue
+        match = str(rule.get("match", "")).strip()
+        if not match:
+            continue
+        regras.append(
+            AnswerRule(
+                match=match,
+                value=rule.get("value", ""),
+                category="human_evidence",
+                requires_human=False,
+            )
+        )
+    if regras:
+        log_event("human_evidence_rules_loaded", total=len(regras))
+    return regras
+
+
 def build_profile(settings: Settings) -> CandidateProfile:
     legacy = _load_yaml(settings.resolve(settings.profile.legacy_profile))
     knowledge = _load_yaml(settings.resolve(settings.profile.legacy_knowledge))
@@ -206,37 +240,8 @@ def build_profile(settings: Settings) -> CandidateProfile:
             AnswerRule(match=match, value=value, category=category)
         )
 
-    # Evidência explícita do operador para temas legal/sensíveis. Fica em
-    # data/human_evidence.json (fora do git) e NÃO passa pelo filtro acima:
-    # cada regra foi cadastrada para o texto real da pergunta no portal.
-    humanas = 0
-    arquivo_humano = settings.resolve(settings.profile.human_evidence_file)
-    try:
-        brutas = (
-            json.loads(arquivo_humano.read_text(encoding="utf-8"))
-            if arquivo_humano.exists()
-            else []
-        )
-    except (OSError, ValueError) as exc:
-        log_event("human_evidence_file_error", error=type(exc).__name__)
-        brutas = []
-    for rule in brutas if isinstance(brutas, list) else []:
-        if not isinstance(rule, dict):
-            continue
-        match = str(rule.get("match", "")).strip()
-        if not match:
-            continue
-        rules.append(
-            AnswerRule(
-                match=match,
-                value=rule.get("value", ""),
-                category="human_evidence",
-                requires_human=False,
-            )
-        )
-        humanas += 1
-    if humanas:
-        log_event("human_evidence_rules_loaded", total=humanas)
+    # Evidência explícita do operador: fora do git e fora do filtro de termos.
+    rules.extend(profile_human_evidence(settings))
 
     cv_path = settings.resolve(settings.profile.cv_path)
     cv_text = extract_cv_text(cv_path) if cv_path.exists() else ""
