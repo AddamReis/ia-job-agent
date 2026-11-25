@@ -250,6 +250,7 @@ def test_password_login_stops_on_verification(monkeypatch: pytest.MonkeyPatch) -
     snapshots = [
         {"url": page.url, "text": "Usuario Código de acceso Ingresar"},
         {"url": page.url, "text": "Just a moment... CAPTCHA verificação"},
+        {"url": page.url, "text": "Just a moment... CAPTCHA verificação"},
     ]
     monkeypatch.setattr("src.agents.browser_apply.snapshot_form", lambda _page: snapshots.pop(0))
 

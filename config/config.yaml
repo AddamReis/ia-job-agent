@@ -64,8 +64,8 @@ discovery_schedule:
   # Filtro nativo do LinkedIn permanece 24h; nossa janela interna vai por cima.
   linkedin_ui_filter: "day"       # day | week
   first_run_hours: 12             # primeira execução do dia pega a noite anterior
-  regular_hours: 3                # execuções seguintes
-  overlap_buffer_minutes: 60      # cobre execução de 40–60 min
+  regular_hours: 2                # execuções seguintes (com overlap cobre o intervalo)
+  overlap_buffer_minutes: 30      # evita reprocessar 1h já vista; standby cobre atraso
   use_last_watermark: true
   auto_widen_time_filter: true    # se o cutoff passar de 24h, usa "week"
   # Uma busca por vez; a próxima espera e roda em seguida (heartbeat deduz restart).
@@ -166,6 +166,24 @@ qualification:
     explicit_leadership_role: true
     # Só barra se a vaga EXIGIR setor ausente; diferencial nunca barra.
     missing_required_domain_experience: true
+
+# Classificação em streaming: a vaga é analisada assim que entra no banco.
+# O worker contínuo é apenas rede de segurança de resíduos recentes.
+classification:
+  workers: 12                     # paralelismo limitado (vLLM comporta ~30)
+  stream_enabled: true
+  safety_net_enabled: true
+  safety_net_max_age_minutes: 60  # resíduos mais antigos não voltam para a fila
+  safety_net_limit: 50            # teto do worker always-on
+  stale_after_hours: 6            # fora da janela útil => histórico
+  health_check_timeout_seconds: 3
+  max_pending_alert: 30
+
+# Skill de desafios do Apply: visão no DGX + segredos do cofre/evidência.
+challenges:
+  enabled: true
+  max_attempts: 2
+  image_quality: 80
 
 # Barreiras do candidato — usadas na análise de cada vaga. Nunca inventar aqui.
 eligibility:

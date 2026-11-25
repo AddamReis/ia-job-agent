@@ -305,6 +305,22 @@ def _dump(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)
 
 
+# Histórico (recusadas/expiradas) não precisa carregar a descrição completa:
+# ela é usada apenas na análise, que já terminateou quando o status muda.
+_HISTORY_DESCRIPTION_LIMIT = 2000
+
+
+def _dump_job(job: JobOpportunity) -> str:
+    descricao = job.description or ""
+    if (
+        job.status in {JobStatus.REJECTED_BY_FILTER, JobStatus.EXPIRED}
+        and len(descricao) > _HISTORY_DESCRIPTION_LIMIT
+    ):
+        resumida = descricao[:_HISTORY_DESCRIPTION_LIMIT].rstrip() + "… [resumo]"
+        job = job.model_copy(update={"description": resumida})
+    return _dump(job)
+
+
 def dedupe_hash(company: str, title: str, location: str, external_id: str = "", url: str = "") -> str:
     """Dedupe pelo ID REAL da vaga. Título/localização podem mudar sem criar duplicata."""
     real_id = (external_id or url or "").strip().lower()
@@ -444,7 +460,7 @@ class Repository:
                     existing.search_query = current.search_query
                     existing.search_location = current.search_location
                     existing.apply_failure_reason = current.apply_failure_reason
-                    existing.data = _dump(current)
+                    existing.data = _dump_job(current)
                     existing.updated_at = now
                 return False
             job.created_at = datetime.fromisoformat(now)
@@ -476,7 +492,7 @@ class Repository:
                     search_query=job.search_query,
                     search_location=job.search_location,
                     apply_failure_reason=job.apply_failure_reason,
-                    data=_dump(job),
+                    data=_dump_job(job),
                     created_at=now,
                     updated_at=now,
                 )
@@ -517,7 +533,7 @@ class Repository:
             row.search_query = job.search_query
             row.search_location = job.search_location
             row.apply_failure_reason = job.apply_failure_reason
-            row.data = _dump(job)
+            row.data = _dump_job(job)
             row.updated_at = job.updated_at.isoformat()
 
     def list_jobs(

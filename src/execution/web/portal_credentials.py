@@ -42,6 +42,20 @@ class PortalCredentialStore:
             return None
         return username, password
 
+    @classmethod
+    def _secret_key(cls, domain: str, kind: str) -> str:
+        return f"portal:{domain.strip().lower()}:{kind.strip().lower()}"
+
+    def set_secret(self, domain: str, kind: str, value: str) -> None:
+        """Guarda segredo auxiliar (ex.: MFA) sem gravá-lo em arquivo ou log."""
+        self._keyring().set_password(self.service, self._secret_key(domain, kind), value)
+
+    def get_secret(self, domain: str, kind: str) -> str:
+        """Lê segredo auxiliar do cofre; '' quando não cadastrado."""
+        return str(
+            self._keyring().get_password(self.service, self._secret_key(domain, kind)) or ""
+        )
+
     def has(self, domain: str) -> bool:
         return self.get(domain) is not None
 

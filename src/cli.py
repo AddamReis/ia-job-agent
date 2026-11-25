@@ -18,7 +18,7 @@ from .agents.agent_runtime import run_worker_loop
 from .agents.application_worker import ApplicationWorker
 from .agents.browser_apply import BrowserApplyAgent
 from .agents.browser_readiness import ensure_browser_ready, with_browser_gate
-from .agents.classification_worker import ClassificationWorker
+from .agents.classification_worker import ClassificationWorker, StreamingClassifier
 from .agents.submit_worker import SubmitWorker
 from .agents.company_suppression import CompanySuppressionAgent
 from .agents.discovery import DiscoveryAgent
@@ -495,20 +495,25 @@ def discovery_serve() -> None:
     settings = _settings()
     cfg = settings.discovery_schedule
     orchestrator: Orchestrator | None = None
+    streaming: StreamingClassifier | None = None
 
     def run_slot(nome: str) -> None:
-        nonlocal orchestrator
+        nonlocal orchestrator, streaming
         console.print(f"[bold]Discovery[/bold] — slot {nome}")
-        DiscoveryAgent(settings).run(nome)
         try:
+            # Orquestrador e classificador compartilham o barramento: cada vaga
+            # salva dispara a análise na hora, sem esperar o fim do slot.
             orchestrator = orchestrator or _orchestrator(settings=settings)
+            if streaming is None:
+                streaming = StreamingClassifier(
+                    _classification_worker(orchestrator), orchestrator.bus
+                )
+            DiscoveryAgent(settings, bus=orchestrator.bus).run(nome)
+            streaming.drain()
+            console.print(f"[bold]Classificação em streaming[/bold] — {streaming.counters}")
             worker = _classification_worker(orchestrator)
-        except Exception as exc:
-            console.print(f"[yellow]Classificação indisponível:[/yellow] {exc}")
-            return
-        try:
-            resultado = worker.run()
-            console.print(f"[bold]Classificação[/bold] — {resultado}")
+            resultado = worker.run_safety_net()
+            console.print(f"[bold]Rede de segurança[/bold] — {resultado}")
         except Exception as exc:
             console.print(f"[red]Classificação falhou:[/red] {exc}")
 
@@ -527,13 +532,13 @@ def classification_run(
 
 @app.command("classification-serve")
 def classification_serve() -> None:
-    """Loop contínuo do agente de classificação, independente do discovery."""
+    """Rede de segurança: só resíduos recentes, com teto, SLA e health check."""
     orchestrator = _orchestrator()
     worker = _classification_worker(orchestrator)
     run_worker_loop(
         orchestrator.repo,
         name="classification",
-        callback=worker.run,
+        callback=worker.run_safety_net,
         interval_seconds=_worker_interval(),
     )
 

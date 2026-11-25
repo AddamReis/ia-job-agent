@@ -177,15 +177,18 @@ _CONFIRM_URL = re.compile(r"/(?:confirmation|submitted|thank-you|thanks|success|
 # "Verificação realizada" é selo de empregador verificado no LinkedIn, não
 # bloqueio. Só parar diante de desafio humano explícito.
 _BLOCK_RE = re.compile(
-    r"captcha|unusual activity|atividade incomum|confirm you are human|"
+    r"captcha|unusual activity|atividade incomum|"
+    r"(?:confirm|verify) you are human|"
     r"verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|"
     r"verificaci[oó]n de (?:humanidad|seguridad|identidad)|"
     r"verificar que (?:voc[eê]|es) (?:é|e) humano|checkpoint",
     re.IGNORECASE,
 )
-# Selo de branding ("protected by reCAPTCHA") não é desafio: Greenhouse e
-# Workday exibem esse rodapé em formulários normais.
-_BLOCK_BADGE_RE = re.compile(r"protected by reCAPTCHA", re.IGNORECASE)
+# Selo de branding ("protected by reCAPTCHA"/"Protected by hCaptcha") não é
+# desafio: Greenhouse, Workday e iCIMS exibem esse rodapé em formulários normais.
+_BLOCK_BADGE_RE = re.compile(
+    r"protected by (?:re|h)?captcha", re.IGNORECASE
+)
 
 
 def platform_block(text: str) -> bool:

@@ -367,6 +367,7 @@ class BrowserResearchAgent:
             if self.bus:
                 self.bus.emit(
                     "job.discovered",
+                    job_id=job.id,
                     company=job.company,
                     title=job.title,
                     precision=job.posted_precision,

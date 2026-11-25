@@ -31,6 +31,7 @@ from ..core.logging import log_event
 from ..core.state import JobStatus
 from ..execution.forms.answers import AnswerResolver
 from ..execution.forms.field import FormField
+from ..execution.web.challenge_agent import ChallengeAgent
 from ..execution.web.form_dom import (
     capture_screenshot,
     click_next,
@@ -143,8 +144,8 @@ _LANDING_STATE_JS = r"""
       .filter(visible).length > 0,
     passwords: [...document.querySelectorAll('input[type=password]')]
       .filter(visible).length,
-    blocked: /captcha|unusual activity|atividade incomum|confirm you are human|verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|verificaci[oó]n de (?:humanidad|seguridad|identidad)|checkpoint/i
-      .test(body.slice(0, 3000).replace(/protected by reCAPTCHA/gi, ' ')),
+    blocked: /captcha|unusual activity|atividade incomum|(?:confirm|verify) you are human|verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|verificaci[oó]n de (?:humanidad|seguridad|identidad)|checkpoint/i
+      .test(body.slice(0, 3000).replace(/protected by (?:re|h)?captcha/gi, ' ')),
   };
 }
 """
@@ -266,6 +267,19 @@ class BrowserApplyAgent:
         self.memory = memory
         self.browser = LinkedInLoggedBrowser(cdp_url, timeout_ms=settings.browser.timeout_ms)
         self.portal_credentials = PortalCredentialStore()
+        llm = getattr(resolver, "llm", None)
+        cfg_desafio = getattr(settings, "challenges", None)
+        self.challenges = (
+            ChallengeAgent(
+                llm,
+                self.portal_credentials,
+                max_attempts=int(getattr(cfg_desafio, "max_attempts", 2)),
+                image_quality=int(getattr(cfg_desafio, "image_quality", 80)),
+            )
+            if llm is not None and getattr(cfg_desafio, "enabled", True)
+            else None
+        )
+        self._active_job: JobOpportunity | None = None
         self.patterns = SitePatternStore(settings.resolve("data/site_patterns.json"))
         self._pending: dict[str, PreparedForm] = {}
         # Ações de UI observadas nesta execução só viram memória após o envio.
@@ -280,22 +294,44 @@ class BrowserApplyAgent:
         seguro = re.sub(r"[^A-Za-z0-9_-]", "_", job.id or "sem-id")[:64]
         return Path("data/evidence") / seguro
 
-    @staticmethod
-    def _ensure_not_blocked(page: Any) -> None:
+    def _resolve_challenge(self, page: Any) -> bool:
+        """Skill genérica: tenta CAPTCHA/senha/MFA antes de declarar bloqueio."""
+        skill = getattr(self, "challenges", None)
+        if skill is None:
+            return False
+        ativo = getattr(self, "_active_job", None)
+        evidencia = self._evidence_dir(ativo) if ativo is not None else None
+        try:
+            # O chamador já viu uma barreira: mesmo sem sinal estruturado, a
+            # visão deve receber a captura antes de declarar bloqueio.
+            return skill.solve(page, evidence_dir=evidencia, force=True)
+        except Exception as exc:
+            log_event(
+                "challenge_skill_failed", error=f"{type(exc).__name__}: {exc}"
+            )
+            return False
+
+    def _ensure_not_blocked(self, page: Any) -> None:
         if submission_state(page) == "blocked":
+            self._resolve_challenge(page)
+            if submission_state(page) != "blocked":
+                return
             raise BlockedByPlatformError(
-                "verificação/CAPTCHA no formulário; o agente não interage"
+                "verificação/CAPTCHA no formulário; a skill não conseguiu resolver"
             )
 
-    @staticmethod
-    def _ensure_no_credential_barrier(page: Any) -> None:
-        """Barreira dura: conta/senha/MFA nunca são preenchidos pelo agente."""
+    def _ensure_no_credential_barrier(self, page: Any) -> None:
+        """Usa a skill de desafios; segue sem segredo cadastrado se não houver evidência."""
         motivo = credential_barrier(page)
-        if motivo:
-            raise HumanActionRequired(
-                "credencial",
-                f"o portal pediu {motivo}; o agente não cria conta nem digita credencial",
-            )
+        if not motivo:
+            return
+        self._resolve_challenge(page)
+        if not credential_barrier(page):
+            return
+        raise HumanActionRequired(
+            "credencial",
+            f"o portal pediu {motivo}; sem credencial/MFA no cofre ou na evidência",
+        )
 
     def _walk_steps(
         self,
@@ -1135,6 +1171,9 @@ class BrowserApplyAgent:
         """Lê a tela antes de agir: termos, login OAuth ou barreira humana."""
         estado = self._observe_screen(page)
         if estado.get("blocked"):
+            self._resolve_challenge(page)
+            estado = self._observe_screen(page)
+        if estado.get("blocked"):
             raise BlockedByPlatformError("verificação/CAPTCHA na entrada do portal")
         settings = getattr(self, "settings", None)
         cfg = None
@@ -1170,6 +1209,9 @@ class BrowserApplyAgent:
         for _ in range(4):
             page, _ = self._ensure_external_entry(page)
             state = self._observe_screen(page)
+            if state.get("blocked"):
+                self._resolve_challenge(page)
+                state = self._observe_screen(page)
             if state.get("blocked"):
                 raise BlockedByPlatformError("verificação/CAPTCHA na landing externa")
             if state.get("has_form") or state.get("has_file"):
@@ -1718,8 +1760,14 @@ class BrowserApplyAgent:
                 or "just a moment" in str(texto).lower()
                 or re.search(r"\b(?:2fa|mfa)\b", str(texto), re.I)
             ):
+                self._resolve_challenge(page)
+                snapshot = snapshot_form(page)
+                texto = str(snapshot.get("text", "") or "").lower()
+                if not self._portal_needs_login(page, snapshot):
+                    log_event("portal_login_challenge_resolved", domain=dominio)
+                    return page
                 raise BlockedByPlatformError(
-                    f"verificação/CAPTCHA no login de {dominio}; agente não interage"
+                    f"verificação/CAPTCHA no login de {dominio}; a skill não conseguiu resolver"
                 )
             raise HumanActionRequired(
                 "login", f"login automático em {dominio} não foi confirmado; verifique as credenciais"
@@ -1997,7 +2045,9 @@ class BrowserApplyAgent:
             filename=Path(cv_path).name if cv_path else "",
         )
         if status == "blocked":
-            raise BlockedByPlatformError("verificação/CAPTCHA ao anexar currículo")
+            self._resolve_challenge(page)
+            if ensure_resume_uploaded(page, cv_path) == "blocked":
+                raise BlockedByPlatformError("verificação/CAPTCHA ao anexar currículo")
         if status == "missing":
             raise ValidationError("currículo informado não existe")
         invalid = {
@@ -2195,6 +2245,7 @@ class BrowserApplyAgent:
         if existing is not None and existing.status == "APPROVED":
             raise ValidationError("aprovação já registrada; use o modo de envio")
         self._consent_authorized = False
+        self._active_job = job
         page, snapshot, observation = self._open(job)
         try:
             self._record_easy_apply(job, observation)
@@ -2294,6 +2345,7 @@ class BrowserApplyAgent:
         job.status = JobStatus.APPLYING
         self.repo.update_job(job)
 
+        self._active_job = job
         self._consent_authorized = True
         try:
             page, snapshot, observation = self._open(job)
@@ -2370,6 +2422,9 @@ class BrowserApplyAgent:
 
             state = submission_state(page)
             if state == "blocked":
+                self._resolve_challenge(page)
+                state = submission_state(page)
+            if state == "blocked":
                 raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
             self._ensure_no_credential_barrier(page)
             if state != "submitted":
@@ -2391,6 +2446,9 @@ class BrowserApplyAgent:
                     click_submit(page)
                     page.wait_for_timeout(2500)
                     state = submission_state(page)
+                    if state == "blocked":
+                        self._resolve_challenge(page)
+                        state = submission_state(page)
                     if state == "blocked":
                         raise BlockedByPlatformError(
                             "verificação/CAPTCHA durante a candidatura"

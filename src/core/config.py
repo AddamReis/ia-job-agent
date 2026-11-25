@@ -222,6 +222,35 @@ class QualificationConfig(BaseModel):
     reject: RejectConfig = Field(default_factory=RejectConfig)
 
 
+class ChallengeConfig(BaseModel):
+    """Skill genérica de desafios (CAPTCHA/senha/MFA) no Chrome logado."""
+
+    enabled: bool = True
+    max_attempts: int = Field(default=2, ge=1, le=4)
+    image_quality: int = Field(default=80, ge=1, le=100)
+
+
+class ClassificationConfig(BaseModel):
+    """Classificação em streaming com rede de segurança limitada.
+
+    A descoberta classifica cada vaga assim que ela é salva, com pool limitado.
+    O worker contínuo só drena resíduos recentes: nunca deve virar outro lote
+    de centenas de vagas defasadas.
+    """
+
+    # O vLLM do DGX aceita ~30 sequências; 12 deixa folga para o Apply.
+    workers: int = Field(default=12, ge=1, le=16)
+    stream_enabled: bool = True
+    safety_net_enabled: bool = True
+    # Só resíduos desta janela entram no worker contínuo.
+    safety_net_max_age_minutes: int = 60
+    safety_net_limit: int = 50
+    # Acima disso a vaga já perdeu o timing: é histórico, não candidatura.
+    stale_after_hours: int = 6
+    health_check_timeout_seconds: float = 3.0
+    max_pending_alert: int = 30
+
+
 class PortalAuthConfig(BaseModel):
     """Conhecimento de autenticação e testes internos de um portal conhecido."""
 
@@ -391,6 +420,8 @@ class Settings(BaseModel):
     )
     search: SearchConfig = Field(default_factory=SearchConfig)
     qualification: QualificationConfig = Field(default_factory=QualificationConfig)
+    classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
+    challenges: ChallengeConfig = Field(default_factory=ChallengeConfig)
     eligibility: EligibilityConfig = Field(default_factory=EligibilityConfig)
     company_suppression: CompanySuppressionConfig = Field(
         default_factory=CompanySuppressionConfig

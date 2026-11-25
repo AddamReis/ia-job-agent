@@ -12,6 +12,7 @@ from src.agents.application_worker import (
 )
 from src.agents.classification_worker import (
     ClassificationWorker,
+    StreamingClassifier,
     sort_for_classification,
 )
 from src.agents.submit_worker import SubmitWorker, submit_preflight
@@ -283,6 +284,64 @@ def test_classification_worker_sends_other_companies_to_llm(
 
     assert counters["qualified"] == 1
     assert qualification.calls == [job.id]
+
+
+def test_pending_limits_residuals_by_age() -> None:
+    recente = _job("Acme", "Recente")
+    antiga = _job("Acme", "Antiga")
+    antiga.created_at = datetime.now() - timedelta(hours=3)
+    worker = ClassificationWorker(
+        StubRepo([antiga, recente]), _settings(), RecordingQualification()
+    )
+
+    assert [job.id for job in worker.pending(max_age_minutes=60)] == [recente.id]
+
+
+def test_safety_net_expires_stale_jobs_and_caps_residuals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UpdatingRepo(StubRepo):
+        def update_job(self, job: JobOpportunity) -> None:
+            super().update_job(job)
+            self.jobs[job.id] = job
+
+    antiga = _job("Acme", "Antiga")
+    antiga.created_at = datetime.now() - timedelta(hours=8)
+    recente = _job("Acme", "Recente")
+    repo = UpdatingRepo([antiga, recente])
+    qualification = RecordingQualification()
+    worker = ClassificationWorker(repo, _settings(), qualification)
+    monkeypatch.setattr(
+        "src.agents.classification_worker.runner_healthy", lambda settings: True
+    )
+
+    counters = worker.run_safety_net()
+
+    assert counters["expired"] == 1
+    assert antiga.status == JobStatus.EXPIRED
+    assert recente.status == JobStatus.QUALIFIED
+    assert qualification.calls == [recente.id]
+
+
+def test_streaming_classifier_classifies_on_discovered_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job("Acme", "Senior .NET Developer")
+    repo = StubRepo([job])
+    bus = EventBus()
+    worker = ClassificationWorker(repo, _settings(), RecordingQualification(), bus)
+    monkeypatch.setattr(
+        "src.agents.classification_worker.runner_healthy", lambda settings: True
+    )
+    streaming = StreamingClassifier(worker, bus)
+    try:
+        bus.emit("job.discovered", job_id=job.id, company=job.company)
+        assert streaming.drain(timeout_seconds=10)
+        assert streaming.counters["qualified"] == 1
+        event_id = repo.agent_event_id("application", "job.qualified", job.id)
+        assert repo.events[event_id]["status"] == "PENDING"
+    finally:
+        streaming.close()
 
 
 def test_application_worker_only_wakes_on_apply_events() -> None:
