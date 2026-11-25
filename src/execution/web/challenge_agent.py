@@ -197,10 +197,18 @@ class ChallengeAgent:
         # hCaptcha expõe um iframe 'checkbox-invisible' e outro 'challenge'.
         # O desafio visual/comportamental está no segundo; priorizá-lo evita
         # capturar o formulário iCIMS por trás do widget.
-        candidatos.sort(
-            key=lambda frame: 0 if "frame=challenge" in str(getattr(frame, "url", "")).lower() else 1
-        )
+        candidatos.sort(key=lambda frame: 0 if self._frame_kind(frame) == "challenge" else 1)
         return candidatos
+
+    @staticmethod
+    def _frame_kind(frame: Any) -> str:
+        """Distingue o iframe do desafio do iframe do checkbox invisível."""
+        url = str(getattr(frame, "url", "") or "").lower()
+        if "frame=challenge" in url:
+            return "challenge"
+        if "frame=checkbox" in url:
+            return "checkbox"
+        return "generic"
 
     @staticmethod
     def _in_viewport(box: dict[str, Any], viewport: dict[str, Any]) -> bool:
@@ -257,6 +265,7 @@ class ChallengeAgent:
             "strategy": "",
             "frames": 0,
             "frame_domain": "",
+            "frame_kind": "",
             "frame": None,
             "element": None,
             "box": {},
@@ -275,6 +284,7 @@ class ChallengeAgent:
                 frame_domain = (urlparse(str(getattr(frame, "url", "") or "")).hostname or "").lower()
             except Exception:
                 frame_domain = ""
+            frame_kind = self._frame_kind(frame)
             try:
                 caixa = elemento.bounding_box() or {}
             except Exception:
@@ -284,6 +294,7 @@ class ChallengeAgent:
                     focused=True,
                     strategy="visible",
                     frame_domain=frame_domain,
+                    frame_kind=frame_kind,
                     frame=frame,
                     element=elemento,
                     box=caixa,
@@ -300,6 +311,7 @@ class ChallengeAgent:
                     focused=True,
                     strategy="scrolled",
                     frame_domain=frame_domain,
+                    frame_kind=frame_kind,
                     frame=frame,
                     element=elemento,
                     box=caixa,
@@ -309,6 +321,7 @@ class ChallengeAgent:
                     domain=dominio,
                     strategy="scrolled",
                     frame_domain=frame_domain,
+                    frame_kind=frame_kind,
                 )
                 return resultado
             try:
@@ -328,6 +341,7 @@ class ChallengeAgent:
                     focused=True,
                     strategy="pinned",
                     frame_domain=frame_domain,
+                    frame_kind=frame_kind,
                     frame=frame,
                     element=elemento,
                     box=caixa,
@@ -337,6 +351,7 @@ class ChallengeAgent:
                     domain=dominio,
                     strategy="pinned",
                     frame_domain=frame_domain,
+                    frame_kind=frame_kind,
                 )
                 return resultado
         if resultado["frames"]:
@@ -486,8 +501,11 @@ class ChallengeAgent:
         evidence_dir: str | Path | None,
         tentativa: int,
         element: Any = None,
+        box: dict[str, Any] | None = None,
     ) -> bytes:
         payload = b""
+        origem = ""
+        dominio = self.domain_of(page)
         # Capturar o iframe do desafio diretamente evita o formulário por trás
         # do widget (o caso do hCaptcha na landing iCIMS da Avalara).
         if element is not None:
@@ -495,15 +513,54 @@ class ChallengeAgent:
                 payload = bytes(
                     element.screenshot(type="jpeg", quality=self.image_quality)
                 )
-            except Exception:
-                payload = b""
+                origem = "iframe"
+            except Exception as exc:
+                log_event(
+                    "challenge_frame_screenshot_failed",
+                    domain=dominio,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        if not payload and box:
+            # Alguns iframes de terceiros não permitem screenshot do elemento;
+            # recortar a tela no retângulo dele preserva apenas o desafio.
+            try:
+                recorte = {
+                    "x": max(0.0, float(box.get("x") or 0)),
+                    "y": max(0.0, float(box.get("y") or 0)),
+                    "width": max(1.0, float(box.get("width") or 0)),
+                    "height": max(1.0, float(box.get("height") or 0)),
+                }
+                payload = bytes(
+                    page.screenshot(
+                        type="jpeg",
+                        quality=self.image_quality,
+                        full_page=False,
+                        clip=recorte,
+                    )
+                )
+                origem = "clip"
+            except Exception as exc:
+                log_event(
+                    "challenge_clip_screenshot_failed",
+                    domain=dominio,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         if not payload:
             try:
                 payload = bytes(
                     page.screenshot(type="jpeg", quality=self.image_quality, full_page=False)
                 )
+                origem = "page"
             except Exception:
                 payload = b""
+        if payload:
+            log_event(
+                "challenge_capture",
+                domain=dominio,
+                attempt=tentativa,
+                source=origem,
+                bytes=len(payload),
+            )
         if evidence_dir is not None and payload:
             try:
                 destino = Path(evidence_dir)
@@ -527,7 +584,9 @@ class ChallengeAgent:
             atual = self.observe(page)
             if atual:
                 obs = atual
-        payload = self._screenshot(page, evidence_dir, tentativa, foco.get("element"))
+        payload = self._screenshot(
+            page, evidence_dir, tentativa, foco.get("element"), foco.get("box")
+        )
         if not payload:
             return False
         uri = "data:image/jpeg;base64," + base64.b64encode(payload).decode("ascii")

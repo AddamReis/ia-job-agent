@@ -47,11 +47,15 @@ class FakePage:
         self.locators: dict[str, FakeLocator] = {}
         self.frames = frames or []
         self.mouse = FakeMouse()
+        self.clips: list[dict] = []
 
     def evaluate(self, _: str) -> dict:
         return self.observations.pop(0) if self.observations else {}
 
-    def screenshot(self, **_: object) -> bytes:
+    def screenshot(self, **kwargs: object) -> bytes:
+        if "clip" in kwargs:
+            self.clips.append(dict(kwargs["clip"]))
+            return b"jpeg-recortado"
         return b"jpeg-falso"
 
     def locator(self, seletor: str) -> FakeLocator:
@@ -285,3 +289,19 @@ def test_frame_challenge_tem_prioridade_e_clique_usa_seu_retangulo(tmp_path) -> 
     assert foco["box"] == {"x": 300, "y": 40, "width": 400, "height": 500}
     assert agente.solve(pagina, evidence_dir=tmp_path) is True
     assert (500.0, 290.0) in pagina.mouse.clicks
+
+
+def test_captura_do_desafio_faz_fallback_para_clip_do_frame() -> None:
+    class ElementoSemScreenshot(FakeElementHandle):
+        def screenshot(self, **_: object) -> bytes:
+            raise RuntimeError("frame de terceiros bloqueia screenshot")
+
+    elemento = ElementoSemScreenshot({"x": 0, "y": 0, "width": 10, "height": 10}, {})
+    pagina = FakePage([])
+    agente = ChallengeAgent(FakeLLM(CaptchaSolution()), FakeCredentials())
+    box = {"x": 20, "y": 30, "width": 320, "height": 240}
+
+    payload = agente._screenshot(pagina, None, 1, elemento, box)
+
+    assert payload == b"jpeg-recortado"
+    assert pagina.clips == [{"x": 20.0, "y": 30.0, "width": 320.0, "height": 240.0}]
