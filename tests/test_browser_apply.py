@@ -12,20 +12,23 @@ from src.agents.browser_apply import (
     _value_from_source,
 )
 from src.core.config import Settings
-from src.core.errors import HumanActionRequired, ValidationError
+from src.core.errors import HumanActionRequired, JobUnavailable, ValidationError
 from src.core.state import JobStatus
 from src.execution.forms.answers import AnswerResolver
 from src.execution.forms.field import FormField
 from src.execution.forms.mapper import resolve_local
 from src.execution.web.form_dom import (
+    _SNAPSHOT_JS,
+    credential_barrier,
     ensure_resume_uploaded,
     fill_field,
+    platform_block,
     resume_attached_on_page,
     submission_state,
 )
 from src.execution.web.site_patterns import SitePatternStore
 from src.models.domain import ApprovalRequest, CandidateProfile, JobAnalysis, JobOpportunity
-from src.models.schemas import AnswerDecision, UiActionDecision
+from src.models.schemas import AnswerDecision, ConsentDecision, UiActionDecision
 
 
 class FakeResolver:
@@ -614,7 +617,9 @@ def test_handle_resume_accepts_upload_done_in_previous_tab(tmp_path) -> None:
     agent.settings = Settings()
     agent.profile = CandidateProfile(documents={"resume": str(cv)})
 
-    snapshot, status = agent._handle_resume(page, {"url": "https://x/profile", "text": ""})
+    _page, snapshot, status = agent._handle_resume(
+        page, {"url": "https://x/profile", "text": ""}
+    )
 
     assert status == "already_attached"
     assert snapshot == {"url": "https://x/profile", "text": ""}
@@ -901,6 +906,41 @@ def test_alignerr_preferences_use_only_operator_choices(tmp_path) -> None:
     assert decisoes["language"] == "true"
 
 
+def test_form_consent_is_decided_by_agent_not_by_company_rule(tmp_path) -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = SitePatternStore(tmp_path / "patterns.json")
+
+    class ConsentResolver:
+        def interpret_consent(self, text, context, **_kwargs):
+            assert "Candidate Terms" in text
+            return ConsentDecision(allow=True, source="dgx", reason="aceite operacional")
+
+    agent.resolver = ConsentResolver()
+    snapshot = {
+        "url": "https://recruitcrm.io/apply/17951232341070072484QXg",
+        "fields": [
+            {
+                "index": 0,
+                "label": "I agree to Candidate Terms",
+                "type": "checkbox",
+                "required": False,
+                "options": [],
+                "autocomplete": "",
+                "identifier": "candidateTermsBlock",
+                "placeholder": "",
+                "nearby_text": "I agree to Candidate Terms",
+                "selector": "#candidateTermsBlock",
+            }
+        ],
+    }
+
+    decisoes = agent._decide(snapshot)
+    assert len(decisoes) == 1
+    assert decisoes[0].value == "true"
+    assert decisoes[0].source == "dgx"
+    assert decisoes[0].category == "consent"
+
+
 def test_submission_state_recognizes_recruitcrm_confirmation() -> None:
     class Page:
         def locator(self, _selector):
@@ -1114,3 +1154,156 @@ def test_recheck_remote_uses_description_not_sidebar_text() -> None:
             "text": "the office, your home, or a blend of both",
         },
     )
+
+
+def test_salary_evidence_resolves_desired_salary_and_csalary() -> None:
+    perfil = CandidateProfile(expectations={"salary": "A combinar"})
+    settings = Settings()
+    for rotulo in ("Desired Salary*", "Salario deseado", "csalary"):
+        valor, origem, precisa_humano, _categoria = resolve_local(
+            FormField(label=rotulo, required=True), perfil, settings
+        )
+        assert valor == "A combinar"
+        assert origem == "profile.expectations.salary"
+        assert precisa_humano is False
+
+
+def test_demographic_opt_out_uses_portal_option_without_profile_data() -> None:
+    campo = FormField(
+        label="I don't wish to answer",
+        field_type="radio",
+        nearby_text="How would you describe your gender identity?",
+    )
+    valor, origem, precisa_humano, _categoria = resolve_local(
+        campo, CandidateProfile(), Settings()
+    )
+    assert valor == "I don't wish to answer"
+    assert origem == "portal:opcao_nao_responder"
+    assert precisa_humano is False
+
+
+def test_credential_barrier_raises_human_action_required() -> None:
+    class Pagina:
+        def evaluate(self, expression, _name=None):
+            if "input[type=password]" in expression:
+                return "senha"
+            return False
+
+    pagina = Pagina()
+    assert credential_barrier(pagina) == "senha"
+    agente = object.__new__(BrowserApplyAgent)
+    with pytest.raises(HumanActionRequired, match="credencial"):
+        agente._ensure_no_credential_barrier(pagina)
+
+
+def test_resume_upload_uses_context_to_pick_cv_input(tmp_path) -> None:
+    cv = tmp_path / "curriculo.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+    nome = cv.name
+    escolhidos: list[int] = []
+
+    class Entrada:
+        def __init__(self, indice: int) -> None:
+            self.indice = indice
+            self.arquivo = ""
+
+        def set_input_files(self, valor: str) -> None:
+            self.arquivo = valor
+            escolhidos.append(self.indice)
+
+    entradas = [Entrada(0), Entrada(1)]
+
+    class Pagina:
+        def evaluate(self, expression, name=None):
+            if "input[type=file]" in expression and "context" in expression:
+                return [
+                    {"index": 0, "context": "Resume/CV* Attach"},
+                    {"index": 1, "context": "Cover Letter Attach"},
+                ]
+            if "checked &&" in expression:
+                return False
+            if "input[type=radio]" in expression and "some" in expression:
+                return False
+            if "files:" in expression:
+                return {"blocked": False, "files": [[nome]], "radios": []}
+            if "uploading|upload in progress" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return False
+            return False
+
+        def locator(self, _selector):
+            return SimpleNamespace(nth=lambda indice: entradas[indice])
+
+    assert ensure_resume_uploaded(Pagina(), cv) == "uploaded"
+    assert escolhidos == [0]
+    assert entradas[0].arquivo == str(cv)
+    assert entradas[1].arquivo == ""
+
+
+def test_submission_state_recognizes_application_has_been_submitted() -> None:
+    class Pagina:
+        url = "https://recruitcrm.io/apply/123"
+
+        @property
+        def locator(self):
+            return lambda _selector: SimpleNamespace(
+                inner_text=lambda: "Your application has been submitted"
+            )
+
+    assert submission_state(Pagina()) == "submitted"
+
+
+def test_verified_employer_badge_is_not_captcha_block() -> None:
+    class Pagina:
+        url = "https://www.linkedin.com/jobs/view/123"
+
+        @property
+        def locator(self):
+            return lambda _selector: SimpleNamespace(
+                inner_text=lambda: "Verificação realizada | Candidatar-se | protected by reCAPTCHA"
+            )
+
+    assert submission_state(Pagina()) != "blocked"
+
+
+def test_recaptcha_branding_is_not_a_platform_challenge() -> None:
+    assert not platform_block("Apply | protected by reCAPTCHA")
+    assert platform_block("Verificação de humano: confirme que você é humano")
+
+
+def test_snapshot_js_discards_decorative_and_honeypot_controls() -> None:
+    """Greenhouse/Breezy escondem sentinels que não são campos do formulário."""
+    assert 'aria-hidden' in _SNAPSHOT_JS
+    assert 'tabindex' in _SNAPSHOT_JS
+    assert 'requiredInput' in _SNAPSHOT_JS
+    assert 'hp[_-]' in _SNAPSHOT_JS
+    assert '!playerControl(el) && !decorative(el)' in _SNAPSHOT_JS
+    assert 'const marcados = arredores' in _SNAPSHOT_JS
+    assert '(t.match(/[*?]/g)' in _SNAPSHOT_JS
+
+
+def test_closed_linkedin_job_is_expired_without_agent_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agente = _route_agent()
+    job = JobOpportunity(
+        external_id="4492885469",
+        status=JobStatus.APPLYING,
+        title="Engineer",
+        company="Joblet-AI",
+    )
+    pagina = FakePage("https://www.linkedin.com/jobs/view/4492885469")
+    agente.browser = FakeBrowser(pagina)
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda _page: {
+            "url": pagina.url,
+            "title": "Engineer | LinkedIn",
+            "text": "Não aceita mais candidaturas",
+        },
+    )
+
+    with pytest.raises(JobUnavailable, match="não aceita mais"):
+        agente._open(job)
+    assert job.status is JobStatus.EXPIRED

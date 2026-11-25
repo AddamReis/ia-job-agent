@@ -8,6 +8,15 @@ from ...core.config import Settings
 from ...models.domain import CandidateProfile
 from .field import FormField
 
+_ENGLISH_YEARS = re.compile(
+    r"\byears of (?:relevant )?experience\b|\byears experience\b", re.IGNORECASE
+)
+_COUNTRY_ALIASES = {
+    "brasil": "Brazil",
+    "estados unidos": "United States",
+    "eua": "United States",
+}
+
 _LOCAL_RULES: list[tuple[str, str, str]] = [
     (r"\bemail\b|e-mail", "personal.email", "profile.personal.email"),
     (r"\bfirst name\b|\bnome\b.*\bprimeiro\b", "personal.first_name", "profile.personal.first_name"),
@@ -15,8 +24,8 @@ _LOCAL_RULES: list[tuple[str, str, str]] = [
     (r"\bphone\b|\btelefone\b|\bcelular\b", "personal.phone_display", "profile.personal.phone"),
     (r"\blinkedin\b", "personal.linkedin", "profile.personal.linkedin"),
     (r"\bgithub\b", "personal.github", "profile.personal.github"),
-    (r"\bcity\b|\bcidade\b", "address.city", "profile.personal.location"),
-    (r"\bcountry\b|\bpa[ií]s\b", "address.country", "profile.personal.location"),
+    (r"\bcity\b|\bcidade\b", "location.city", "profile.personal.location"),
+    (r"\bcountry\b|\bpa[ií]s\b", "location.country", "profile.personal.location"),
     (r"\bcurrent company\b|\bempresa atual\b", "current_company", "profile.current_company"),
     (r"\bcurrent title\b|\bcargo atual\b", "current_title", "profile.current_title"),
     (r"\bexperience years\b|\banos de experi", "years_experience", "profile.years_experience"),
@@ -36,7 +45,31 @@ _SENSITIVE = re.compile(
     r"gender|genero|g nero|sexo|date of birth|birth date|birthday|data de nascimento|"
     r"nascimento|^\s*month\s*$|^\s*day\s*$|^\s*year\s*$|"
     r"termos|privacidade|politica|autorizacao|trabalho|visto|sponsorship|"
-    r"sal[aá]rio|pretens[aã]o|contrato|legal|compromisso|mfa|captcha|senha|password",
+    r"authorized to work|work authorization|right to work|visa sponsorship|"
+    r"security clearance|"
+    r"sal[aá]rio|salary|csalary|salarial|pretens[aã]o|contrato|legal|compromisso|"
+    r"mfa|captcha|senha|password",
+    re.IGNORECASE,
+)
+
+_SALARY_FIELD = re.compile(
+    r"desired salary|sal[aá]rio deseado|salario deseado|csalary|"
+    r"salary expectation|expected salary|pretens[aã]o salarial|"
+    r"expectativa salarial|sal[aá]rio pretendido|salarial|remunera[cç][aã]o",
+    re.IGNORECASE,
+)
+
+# Perguntas demográficas não precisam de dado do perfil quando o próprio portal
+# oferece uma opção de não responder: escolher essa opção não divulga nada.
+_DEMOGRAPHIC_FIELD = re.compile(
+    r"race|racial|ethnic|veteran|disabil|defici[eê]ncia|lgbtqiapn|"
+    r"sexual orientation|gender identity",
+    re.IGNORECASE,
+)
+_OPT_OUT_OPTION = re.compile(
+    r"don't wish to answer|do not wish to answer|prefer not to (?:say|answer)|"
+    r"prefiro n[aã]o responder|n[aã]o desejo responder|"
+    r"choose not to self.identify|escolho n[aã]o se identificar",
     re.IGNORECASE,
 )
 
@@ -48,6 +81,21 @@ def _get_path(profile: CandidateProfile, path: str) -> object:
             return None
         current = getattr(current, part, None)
     return current
+
+
+def _location_part(profile: CandidateProfile, parte: str) -> str:
+    """Cidade/estado/país vêm de ``personal.location``, único campo de endereço."""
+    raw = str(_get_path(profile, "personal.location") or "")
+    partes = [item.strip() for item in raw.split(",") if item.strip()]
+    if not partes:
+        return ""
+    if parte == "city":
+        return partes[0]
+    if parte == "state":
+        return partes[1] if len(partes) > 1 else ""
+    if parte == "country":
+        return partes[-1]
+    return ""
 
 
 def _birth_part(profile: CandidateProfile, parte: str) -> str:
@@ -70,29 +118,52 @@ def _birth_part(profile: CandidateProfile, parte: str) -> str:
 
 
 def _sensitive_evidence(
-    signature: str, profile: CandidateProfile
+    field: FormField, profile: CandidateProfile
 ) -> tuple[str, str] | None:
-    """Só aceita dado sensível se ele estiver cadastrado explicitamente no perfil."""
-    if _GENDER_FIELD.search(signature):
-        caminho, origem = "personal.gender", "profile.personal.gender"
-    elif _BIRTH_FULL_FIELD.search(signature):
-        caminho, origem = "personal.birth_date", "profile.personal.birth_date"
-    elif _BIRTH_MONTH_FIELD.search(signature):
-        caminho, origem = "personal.birth_month", "profile.personal.birth_month"
-    elif _BIRTH_DAY_FIELD.search(signature):
-        caminho, origem = "personal.birth_day", "profile.personal.birth_day"
-    elif _BIRTH_YEAR_FIELD.search(signature):
-        caminho, origem = "personal.birth_year", "profile.personal.birth_year"
-    else:
+    """Só aceita dado sensível se houver evidência explícita no perfil/portal.
+
+    <<<origem>> é sempre verificável: perfil preenchido pelo operador ou opção
+    do próprio formulário para não responder. Nunca há inferência por LLM.
+    """
+    signature = field.signature()
+    rotulo = " ".join(str(field.nearby_text or "").split()).lower()
+    pergunta = re.split(r"[?]", rotulo, maxsplit=1)[0]
+    contexto = f"{signature} {rotulo}".lower()
+    # Salário é sensível, mas só quando é a pergunta do campo. Uma pergunta
+    # vizinha sobre anos de experiência não pode sequestrar a resposta.
+    if _SALARY_FIELD.search(pergunta) or _SALARY_FIELD.search(signature):
+        valor = profile.expectations.get("salary") or profile.expectations.get("salario")
+        if valor not in (None, ""):
+            return (str(valor), "profile.expectations.salary")
         return None
 
-    valor = _get_path(profile, caminho)
-    if valor in (None, ""):
+    if _GENDER_FIELD.search(contexto):
+        caminho, origem = "personal.gender", "profile.personal.gender"
+    elif _BIRTH_FULL_FIELD.search(contexto):
+        caminho, origem = "personal.birth_date", "profile.personal.birth_date"
+    elif _BIRTH_MONTH_FIELD.search(contexto):
+        caminho, origem = "personal.birth_month", "profile.personal.birth_month"
+    elif _BIRTH_DAY_FIELD.search(contexto):
+        caminho, origem = "personal.birth_day", "profile.personal.birth_day"
+    elif _BIRTH_YEAR_FIELD.search(contexto):
+        caminho, origem = "personal.birth_year", "profile.personal.birth_year"
+    else:
+        caminho, origem = "", ""
+
+    valor = _get_path(profile, caminho) if caminho else None
+    if valor in (None, "") and caminho:
         parte = caminho.rsplit(".", 1)[-1].removeprefix("birth_")
         valor = _birth_part(profile, parte)
-    if valor in (None, ""):
-        return None
-    return (str(valor), origem)
+    if valor not in (None, ""):
+        return (str(valor), origem)
+
+    # Sem dado no perfil: a única resposta segura é a opção do próprio portal
+    # de não responder. Ela não inventa nem divulga dado sensível.
+    opcoes = list(field.options) or [field.label]
+    for opcao in opcoes:
+        if _OPT_OUT_OPTION.search(str(opcao)):
+            return (str(opcao), "portal:opcao_nao_responder")
+    return None
 
 
 def resolve_local(
@@ -100,18 +171,70 @@ def resolve_local(
 ) -> tuple[str, str, bool, str]:
     """Retorna (valor, origem, precisa_humano, categoria)."""
     signature = field.signature()
-    if _SENSITIVE.search(signature):
-        evidencia = _sensitive_evidence(signature, profile)
+    rotulo_renderizado = " ".join(str(field.nearby_text or "").split()).lower()
+    pergunta = re.split(r"[?]", rotulo_renderizado, maxsplit=1)[0]
+    contexto = f"{signature} {rotulo_renderizado}".lower()
+    if (
+        _SENSITIVE.search(signature)
+        or _SENSITIVE.search(pergunta)
+        or _GENDER_FIELD.search(pergunta)
+        or _BIRTH_FULL_FIELD.search(pergunta)
+        or _BIRTH_MONTH_FIELD.search(pergunta)
+        or _BIRTH_DAY_FIELD.search(pergunta)
+        or _BIRTH_YEAR_FIELD.search(pergunta)
+        or _DEMOGRAPHIC_FIELD.search(pergunta)
+    ):
+        evidencia = _sensitive_evidence(field, profile)
         if evidencia is not None:
             valor, origem = evidencia
             return (valor, origem, False, "general")
         return ("", "politica:acao_sensivel", True, "sensitive")
 
+    # A assinatura tem prioridade: rótulos like "Email*" vizinhos não podem
+    # sequestrar um campo "Country". Só depois usamos o texto renderizado,
+    # necessário quando o portal mostra placeholders ("Tony", "Answer").
+    def _resolvido(path: str) -> str:
+        value = (
+            _location_part(profile, path.removeprefix("location."))
+            if path.startswith("location.")
+            else _get_path(profile, path)
+        )
+        if value in (None, ""):
+            return ""
+        if path == "location.country":
+            valor = str(value).strip()
+            return _COUNTRY_ALIASES.get(valor.lower(), valor)
+        return str(value)
+
     for pattern, path, source in _LOCAL_RULES:
         if re.search(pattern, signature):
-            value = _get_path(profile, path)
-            if value not in (None, ""):
-                return (str(value), source, False, "general")
+            value = _resolvido(path)
+            if value:
+                return (value, source, False, "general")
+
+    # No texto renderizado só o início pertence ao campo; o restante pode ser
+    # de irmãos. Casar no início evita que "Email*" vizinho resolva "Country".
+    for pattern, path, source in _LOCAL_RULES:
+        if re.match(rf"^\s*(?:{pattern})", rotulo_renderizado, re.IGNORECASE):
+            value = _resolvido(path)
+            if value:
+                return (value, source, False, "general")
+
+    if _ENGLISH_YEARS.search(pergunta):
+        value = _get_path(profile, "years_experience")
+        if value not in (None, ""):
+            return (str(value), "profile.years_experience", False, "general")
+
+    if re.search(r"\bcountry\b|\bpa[ií]s\b", rotulo_renderizado) and not re.search(
+        r"country code|c\s*digo do pa\s*s|codigo do pais", signature
+    ):
+        cru = _location_part(profile, "country")
+        desejado = _COUNTRY_ALIASES.get(cru.lower(), cru)
+        if desejado:
+            for option in field.options:
+                if desejado.lower() in str(option).lower():
+                    return (str(option), "profile.personal.country", False, "general")
+            return (desejado, "profile.personal.country", False, "general")
 
     if re.search(r"c\s*digo do pa\s*s|country code|codigo do pais", signature):
         location = str(_get_path(profile, "personal.location") or "")
@@ -134,7 +257,7 @@ def resolve_local(
         return (profile.documents.get("resume", ""), "profile.documents.resume", False, "resume")
 
     for rule in profile.answer_rules:
-        if re.search(rule.match, signature, re.IGNORECASE):
+        if re.search(rule.match, contexto, re.IGNORECASE):
             category = rule.category
             if (
                 rule.requires_human

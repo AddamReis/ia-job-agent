@@ -14,6 +14,7 @@ from typing import Any
 from ..core.config import Settings
 from ..core.events import EventBus
 from ..core.logging import log_event
+from ..core.errors import JobUnavailable
 from ..core.state import JobStatus
 from ..models.domain import ApprovalRequest, JobOpportunity
 from ..storage.database import Repository
@@ -103,6 +104,7 @@ class SubmitWorker:
             "events": len(eventos),
             "submitted": 0,
             "blocked": 0,
+            "unavailable": 0,
             "errors": 0,
         }
         log_event("submit_worker_started", events=len(eventos))
@@ -139,6 +141,17 @@ class SubmitWorker:
 
             try:
                 application = self.apply_agent.submit(job, approval, confirmed=True)
+            except JobUnavailable as exc:
+                # Vaga encerrada no portal não é falha do agente: encerra o evento
+                # sem deixar a vaga na aba Erros da PWA.
+                self.repo.ack_agent_event(event_id, status="ACK", error=str(exc)[:2000])
+                counters["unavailable"] += 1
+                log_event(
+                    "submit_worker_unavailable",
+                    job_id=job_id,
+                    reason=str(exc)[:200],
+                )
+                continue
             except Exception as exc:
                 self.repo.ack_agent_event(
                     event_id, status="FAILED", error=f"{type(exc).__name__}: {exc}"

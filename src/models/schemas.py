@@ -116,3 +116,17 @@ class UiActionDecision(BaseModel):
     source: str = ""
     needs_human: bool = False
     reason: str = ""
+
+
+class ConsentDecision(BaseModel):
+    """Decisão do agente sobre um aceite operacional exibido na tela.
+
+    Não é uma regra por empresa: o modelo lê o texto renderizado e distingue
+    consentimento de processo seletivo de termos legais/sensíveis, que sempre
+    exigem ação humana.
+    """
+
+    allow: bool = False
+    source: str = ""
+    needs_human: bool = False
+    reason: str = ""

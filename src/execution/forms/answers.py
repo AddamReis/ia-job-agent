@@ -6,9 +6,9 @@ import re
 from ...core.events import EventBus
 from ...core.logging import field_summary, log_event
 from ...llm.factory import LLMRouter
-from ...llm.prompts import answer_messages, ui_action_messages
+from ...llm.prompts import answer_messages, consent_messages, ui_action_messages
 from ...models.domain import CandidateProfile
-from ...models.schemas import AnswerDecision, UiActionDecision
+from ...models.schemas import AnswerDecision, ConsentDecision, UiActionDecision
 from .field import FormField
 from .mapper import resolve_local
 from ..profile.builder import profile_context
@@ -97,6 +97,64 @@ class AnswerResolver:
                 field=field.label or field.identifier,
                 needs_human=decision.needs_human,
             )
+        return decision
+
+    def interpret_consent(
+        self,
+        checkbox_text: str,
+        screen_context: str,
+        *,
+        approval_context: str = "",
+        memory_context: str = "",
+    ) -> ConsentDecision:
+        """Deixa o agente julgar um aceite renderizado, sem regra por portal.
+
+        A barreira sensível permanece fora do modelo: mesmo que ele responda
+        ``allow=true``, texto de senha/CAPTCHA/termos legais/visto etc. exige
+        ação humana.
+        """
+        try:
+            decision = self.llm.structured(
+                consent_messages(
+                    checkbox_text,
+                    screen_context,
+                    approval_context=approval_context,
+                    memory_context=memory_context,
+                ),
+                ConsentDecision,
+            )
+        except Exception as exc:
+            log_event("consent_llm_falha", error=str(exc)[:200])
+            return ConsentDecision(needs_human=True, reason="LLM indisponível")
+
+        barreira = re.compile(
+            r"password|senha|contrase[nñ]a|captcha|\bmfa\b|\b2fa\b|"
+            r"terms of service|termos de servi[cç]o|privacy policy|"
+            r"pol[ií]tica de privacidade|release agreement|"
+            r"autoriza[cç][aã]o de trabalho|work authorization|visto|"
+            r"sponsorship|pagamento|payment|data de nascimento|date of birth|"
+            r"g[êe]nero|gender|ra[cç]a|race|religi[aã]o|religion",
+            re.I,
+        )
+        if barreira.search(str(checkbox_text or "")):
+            return ConsentDecision(
+                allow=False,
+                needs_human=True,
+                reason="aceite sensível ou legal exige decisão humana",
+            )
+        if decision.needs_human or not decision.allow:
+            return ConsentDecision(
+                allow=False,
+                needs_human=True,
+                reason=str(decision.reason or "aceite não reconhecido como operacional"),
+            )
+        if not str(decision.source or "").strip():
+            decision.source = "llm"
+        log_event(
+            "consent_interpretado",
+            source=str(decision.source)[:40],
+            reason=str(decision.reason)[:160],
+        )
         return decision
 
     def interpret_action(

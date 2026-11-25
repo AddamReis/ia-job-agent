@@ -290,6 +290,50 @@ Regras obrigatorias:
 """
 
 
+CONSENT_SYSTEM = """Voce decide, como agente de candidatura, se um aceite exibido na tela
+e um consentimento operacional do processo seletivo ou uma obrigacao sensivel.
+
+Regras obrigatorias:
+- Use SOMENTE o texto renderizado fornecido. Nao adivinhe o conteudo de links.
+- Aceites operacionais (ex.: confirmar que as informacoes da candidatura sao
+  veridicas, concordar com as regras do processo seletivo/candidate terms) podem
+  ser marcados quando a automacao da candidatura foi autorizada pelo operador.
+- NUNCA aceite termos de servico, politica de privacidade, liberacao de dados,
+  contrato de trabalho, autorizacao de trabalho, visto/sponsorship, pagamento,
+  verificacao de identidade, CAPTCHA/MFA/senha ou dados demographicos/sensiveis.
+  Nesses casos, marque needs_human=true e allow=false.
+- Se o texto for ambiguo, estiver truncado ou misturar grandes terms legais com
+  consentimento operacional, marque needs_human=true. Nao invente contexto.
+- A aprovacao humana persistida, quando informada, autoriza apenas o envio da
+  candidatura e aceites operacionais; nunca substitui uma barreira sensivel.
+- Responda SEMPRE em JSON valido, sem texto fora do JSON.
+"""
+
+
+def consent_messages(
+    checkbox_text: str,
+    screen_context: str,
+    *,
+    approval_context: str = "",
+    memory_context: str = "",
+) -> list[dict[str, str]]:
+    content = (
+        f"Texto renderizado do aceite (rotulo e arredores):\n{checkbox_text[:1200]}\n\n"
+        f"Contexto da tela:\n{screen_context[:1600]}\n"
+    )
+    if approval_context:
+        content += f"\n{approval_context[:600]}\n"
+    if memory_context:
+        content += (
+            "\n\nMEMORIA LOCAL DE ACEITES BEM-SUCEDIDOS (contexto auditavel; "
+            "confirme que o texto renderizado continua compativel):\n" + memory_context[:1200]
+        )
+    return [
+        {"role": "system", "content": CONSENT_SYSTEM},
+        {"role": "user", "content": content},
+    ]
+
+
 def ui_action_messages(
     intent: str,
     dialog_text: str,

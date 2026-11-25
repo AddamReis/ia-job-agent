@@ -10,6 +10,7 @@ import base64
 import hashlib
 import re
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,9 +53,20 @@ _SNAPSHOT_JS = r"""
   const playerControl = (el) => Boolean(el.closest(
     '.video-js,.vjs-control-bar,[class*="vjs-"],[data-testid*="video"]'
   ));
+  // Greenhouse/Breezy misturam sentinels decorativos aos controles reais:
+  // inputs aria-hidden/tabindex=-1 usados pelo React Select para validação,
+  // e honeypots hp_*. Eles não recebem dados e não podem virar "campo sem rótulo".
+  const decorative = (el) => {
+    const name = el.getAttribute('name') || el.id || '';
+    return el.getAttribute('aria-hidden') === 'true'
+      || el.getAttribute('tabindex') === '-1'
+      || el.classList.contains('requiredInput')
+      || /^hp[_-]/i.test(name)
+      || Boolean(el.closest('[aria-hidden="true"]'));
+  };
   const nodes = [...document.querySelectorAll(
     'input, textarea, select, [role="textbox"], [role="combobox"], [role="checkbox"], [role="radio"]'
-  )].filter(el => !playerControl(el));
+  )].filter(el => !playerControl(el) && !decorative(el));
   const fields = [];
   let index = 0;
   // Selects MUI expõem um [role=combobox] e um input interno para o mesmo campo.
@@ -62,9 +74,14 @@ _SNAPSHOT_JS = r"""
   const interno = (el) => el.getAttribute('aria-hidden') === 'true' &&
     el.parentElement && el.parentElement.querySelector(':scope > [role=combobox]');
   for (const el of nodes.filter(el => !interno(el))) {
+    // Botões Radix são <button type="button" role="combobox">; o role define
+    // a ação correta (abrir lista), não o type nativo do botão.
+    const role = (el.getAttribute('role') || '').toLowerCase();
     const type = el.tagName.toLowerCase() === 'select'
       ? 'select'
-      : (el.getAttribute('type') || el.getAttribute('role') || 'text').toLowerCase();
+      : (/^(textbox|combobox|checkbox|radio)$/.test(role)
+          ? role
+          : (el.getAttribute('type') || role || 'text').toLowerCase());
     if (['hidden', 'submit', 'button', 'image', 'reset', 'file'].includes(type)) continue;
     if (el.disabled) continue;
     const scoped = inScope(el);
@@ -87,6 +104,26 @@ _SNAPSHOT_JS = r"""
     const meaningful = String(label).trim() && !generic.test(String(label));
     if (!scoped && !meaningful) continue;
     const parent = el.parentElement || el;
+    // Radios/checkboxes costumam ter o <label> como pai imediato. Subir alguns
+    // níveis recupera a pergunta do grupo ("Gender", "Desired Salary") sem
+    // alterar a assinatura do campo.
+    const arredores = [];
+    let node = parent;
+    for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+      const texto = (node.innerText || '').replace(/\s+/g, ' ').trim();
+      if (texto && texto.length <= 300 && !arredores.includes(texto)) {
+        arredores.push(texto);
+      }
+    }
+    // Não juntar irmãos do formulário: isso fazia o campo "Country" conter
+    // "Email*" e casar com a regra de e-mail. Preferir o texto mais próximo
+    // que pareça rótulo/pergunta (termina em * ou ?), senão o mais curto.
+    const marcados = arredores
+      .filter(t => /[?*]/.test(t) && (t.match(/[*?]/g) || []).length <= 2 && t.length <= 180)
+      .sort((a, b) => a.length - b.length);
+    const pergunta = marcados[0]
+      || arredores.find(t => t.length <= 80)
+      || arredores[0] || '';
     const options = el.tagName === 'SELECT'
       ? [...el.options].map(o => (o.text || '').trim()).filter(Boolean)
       : [];
@@ -103,7 +140,7 @@ _SNAPSHOT_JS = r"""
       value: String(el.value || '').slice(0, 300),
       required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
       options: options.slice(0, 60),
-      nearby_text: (parent.innerText || '').slice(0, 200),
+      nearby_text: pergunta.slice(0, 200),
       selector: cssFor(el),
     });
     index += 1;
@@ -128,10 +165,55 @@ _CONFIRM_MARKS = (
     "withdraw", "application submitted", "application sent", "candidatura enviada",
     "candidatura enviada com sucesso", "inscrição enviada",
     "inscricao enviada", "seu pedido foi enviado",
-    "your application was submitted", "thank you for applying",
+    "your application was submitted", "your application has been submitted",
+    "application has been submitted", "application was submitted",
+    "submission successful", "successfully submitted", "application complete",
+    "thank you for applying", "thank you for your application", "thanks for applying",
     "we have received your application", "your application has been received",
+    "application received", "candidatura recebida", "inscrição recebida",
+    "solicitud enviada", "solicitud recibida", "postulación enviada",
 )
-_BLOCK_MARKS = ("captcha", "verificação", "verificacao", "unusual activity", "atividade incomum")
+_CONFIRM_URL = re.compile(r"/(?:confirmation|submitted|thank-you|thanks|success|complete)(?:/|\?|$)", re.I)
+# "Verificação realizada" é selo de empregador verificado no LinkedIn, não
+# bloqueio. Só parar diante de desafio humano explícito.
+_BLOCK_RE = re.compile(
+    r"captcha|unusual activity|atividade incomum|confirm you are human|"
+    r"verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|"
+    r"verificaci[oó]n de (?:humanidad|seguridad|identidad)|"
+    r"verificar que (?:voc[eê]|es) (?:é|e) humano|checkpoint",
+    re.IGNORECASE,
+)
+# Selo de branding ("protected by reCAPTCHA") não é desafio: Greenhouse e
+# Workday exibem esse rodapé em formulários normais.
+_BLOCK_BADGE_RE = re.compile(r"protected by reCAPTCHA", re.IGNORECASE)
+
+
+def platform_block(text: str) -> bool:
+    """True somente diante de desafio humano explícito, não de selo de Grupo."""
+    return bool(_BLOCK_RE.search(_BLOCK_BADGE_RE.sub(" ", str(text or ""))))
+
+# Barreiras que o agente nunca transpõe: criar conta, digitar senha, resolver
+# CAPTCHA/MFA. Diferenciá-las de erro técnico evita retries inúteis.
+_CREDENTIAL_BARRIER_JS = r"""
+() => {
+  const texto = (document.body.innerText || '').slice(0, 4000)
+    .replace(/protected by reCAPTCHA/gi, ' ');
+  const visivel = el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const senhas = [...document.querySelectorAll('input[type=password]')]
+    .filter(visivel).length;
+  if (/captcha|unusual activity|atividade incomum|confirm you are human|\bmfa\b|\b2fa\b/i
+      .test(texto)) return 'verificação/CAPTCHA/MFA';
+  if (senhas > 0 || /password\s*\*?|senha|verify new password|confirm password/i
+      .test(texto)) return 'senha';
+  if (/create account|criar conta|sign in|iniciar sess[aã]o|entrar com/i.test(texto)) {
+    return 'criação de conta/login';
+  }
+  return '';
+}
+"""
 
 _NEXT_LABELS = (
     "Next", "Next step", "Continue", "Continuar", "Próximo", "Proximo",
@@ -218,6 +300,20 @@ _RESUME_UPLOADING_JS = r"""
 }
 """
 
+# Greenhouse/iCIMS têm mais de um input de arquivo (CV e carta). Escolher o
+# último anexava o CV no campo errado; este JS lê o contexto real de cada input.
+_RESUME_INPUT_JS = r"""
+() => [...document.querySelectorAll('input[type=file]')].map((input, index) => {
+  let contexto = [input.id, input.name, input.getAttribute('aria-label') || '']
+    .filter(Boolean).join(' ');
+  let node = input;
+  for (let i = 0; i < 5 && node; i++, node = node.parentElement) {
+    contexto += ' ' + (node.innerText || '').replace(/\s+/g, ' ').trim();
+  }
+  return {index, context: contexto.slice(0, 600)};
+})
+"""
+
 
 _VISIBLE_BUTTONS_JS = r"""
 () => [...document.querySelectorAll('button')]
@@ -242,6 +338,14 @@ def snapshot_form(page: Any) -> dict[str, Any]:
 def visible_buttons(page: Any) -> list[dict[str, Any]]:
     """Botões visíveis do step atual, para diagnóstico sem expor dados."""
     return page.evaluate(_VISIBLE_BUTTONS_JS) or []
+
+
+def credential_barrier(page: Any) -> str:
+    """Motivo da barreira humana na tela, ou ``''`` quando não há barreira."""
+    try:
+        return str(page.evaluate(_CREDENTIAL_BARRIER_JS) or "").strip()
+    except Exception:
+        return ""
 
 
 _EXPERIENCE_STEP_MARKS = (
@@ -308,9 +412,19 @@ _EXPERIENCE_CARD_JS = r"""
 
 
 def is_experience_step(snapshot: dict[str, Any]) -> bool:
-    """True quando a etapa do formulário pede histórico profissional."""
+    """True quando a etapa do formulário pede histórico profissional.
+
+    A marca precisa ser um título isolado. Frases descritivas como "We use
+    LinkedIn to review your professional work experience" não são uma etapa
+    de work experience: tratá-las como tal faria o agente pular todo o formulário.
+    """
     text = str(snapshot.get("text", "") or "").lower()
-    return any(mark in text for mark in _EXPERIENCE_STEP_MARKS)
+    for mark in _EXPERIENCE_STEP_MARKS:
+        if re.search(
+            rf"(?m)^\s*{re.escape(mark)}\s*(?:\*|:|\d+)?\s*$", text
+        ):
+            return True
+    return False
 
 
 def _normalize_title(value: object) -> str:
@@ -533,12 +647,15 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
         return "select_failed"
 
     clicked = ""
+    entradas = page.evaluate(_RESUME_INPUT_JS) or []
+    if not entradas and page.locator('input[type="file"]').count():
+        # Compatibilidade com páginas que não expõem evaluate rico (fakes e
+        # portais antigos): um único input visível é inequívoco.
+        entradas = [{"index": 0, "context": "file input"}]
     # Alguns portais (Greenhouse, formulários paginados) já expõem o input.
     # Nesses casos não há botão para clicar: usar o input direto evita o falso
     # "upload_button_not_found" quando o campo está visível.
-    file_input = page.locator('input[type="file"]')
-    if file_input.count() == 0:
-        clicked = ""
+    if not entradas:
         for label in _UPLOAD_LABELS:
             try:
                 locator = page.get_by_role("button", name=re.compile(re.escape(label), re.I))
@@ -555,11 +672,27 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
             return "upload_button_not_found"
 
         # O LinkedIn cria um input[type=file] oculto quando o botão é clicado.
-        if file_input.count() == 0:
-            page.wait_for_timeout(1000)
-        if file_input.count() == 0:
+        page.wait_for_timeout(1000)
+        entradas = page.evaluate(_RESUME_INPUT_JS) or []
+        if not entradas and page.locator('input[type="file"]').count():
+            entradas = [{"index": 0, "context": "file input"}]
+        if not entradas:
             return "file_input_not_found"
-    file_input.last.set_input_files(str(cv))
+
+    resume_re = re.compile(r"resume|curr[ií]culo|curriculum|\bcv\b", re.I)
+    relevantes = [item for item in entradas if resume_re.search(str(item.get("context", "")))]
+    if relevantes:
+        indice = int(relevantes[0]["index"])
+    elif len(entradas) == 1:
+        indice = int(entradas[0]["index"])
+    else:
+        # Múltiplos arquivos sem contexto de CV (ex.: carta e documentos):
+        # escolher qualquer um lançaria o currículo no campo errado.
+        return "resume_input_not_found"
+    file_input = page.locator('input[type="file"]')
+    nth = getattr(file_input, "nth", None)
+    alvo = nth(indice) if callable(nth) else file_input.last
+    alvo.set_input_files(str(cv))
 
     # Uploads reais (Alignerr) podem levar 15–20s antes de habilitar o Continue.
     deadline = time.time() + 60
@@ -588,47 +721,88 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
 
 
 def _choose_combobox(page: Any, target: Any, value: str) -> bool:
-    """Seleciona opção em combobox MUI (``div role=combobox``).
+    """Seleciona opção em combobox MUI/Radix (``role=combobox``).
 
-    Esses controles não são ``input`` e rejeitam ``fill``; a seleção correta é
-    abrir o popup e clicar na opção com o texto desejado.
+    A correspondência é exata ou por prefixo. Prefixo é necessário em portais
+    que devolvem ``Cidade, UF, País``; ainda assim ``Male`` nunca casa com
+    ``Female`` porque o prefixo exige vírgula ou espaço logo após o valor.
     """
     escolhido = str(value or "").strip()
     if not escolhido:
         return False
-    page.keyboard.press("Escape")
-    try:
-        target.click(timeout=5000)
-    except Exception:
-        target.evaluate("(el) => el.click()")
-    page.wait_for_timeout(200)
-    lista = page.locator('[role="listbox"]')
-    if lista.count() == 0 or not lista.first.is_visible():
+
+    def _norm(texto: str) -> str:
+        sem_acento = unicodedata.normalize("NFKD", str(texto or ""))
+        return re.sub(r"\s+", " ", sem_acento.encode("ascii", "ignore").decode()).strip().casefold()
+
+    alvo = _norm(escolhido)
+
+    def _ranking(texto: str) -> int | None:
+        normalizado = _norm(texto)
+        if normalizado == alvo:
+            return 0
+        if normalizado.startswith(alvo + ",") or normalizado.startswith(alvo + " "):
+            return 1 + len(normalizado)
+        return None
+
+    def _abrir() -> None:
+        page.keyboard.press("Escape")
         try:
             target.click(timeout=5000)
         except Exception:
             target.evaluate("(el) => el.click()")
+        page.wait_for_timeout(250)
+        lista = page.locator('[role="listbox"]')
+        if lista.count() == 0 or not lista.first.is_visible():
+            try:
+                target.click(timeout=5000)
+            except Exception:
+                target.evaluate("(el) => el.click()")
+            page.wait_for_timeout(250)
+
+    def _escolher() -> bool:
+        opcoes = page.locator('[role="listbox"] [role="option"]')
+        # Listas Radix carregam as opções de forma assíncrona após a digitação.
+        for _tentativa in range(20):
+            if opcoes.count() > 0:
+                break
+            page.wait_for_timeout(150)
+        candidatos: list[tuple[int, int, Any]] = []
+        for indice in range(opcoes.count()):
+            try:
+                texto = opcoes.nth(indice).inner_text().strip()
+            except Exception:
+                continue
+            rank = _ranking(texto)
+            if rank is not None:
+                candidatos.append((rank, indice, opcoes.nth(indice)))
+        if not candidatos:
+            return False
+        candidatos.sort(key=lambda item: (item[0], item[1]))
+        candidatos[0][2].click(timeout=5000)
         page.wait_for_timeout(200)
-    # Correspondência exata: "Male" não pode selecionar "Female".
-    exata = re.compile(rf"^\s*{re.escape(escolhido)}\s*$", re.I)
-    opcao = page.locator('[role="listbox"] [role="option"]').filter(has_text=exata)
-    if opcao.count() == 0:
-        opcao = page.get_by_role("option", name=escolhido, exact=True)
-    if opcao.count() > 0:
-        opcao.first.click(timeout=5000)
-        page.wait_for_timeout(150)
-        if target.inner_text().strip() == escolhido:
-            return True
-    # Fallback para combobox que filtra opções ao digitar.
-    page.keyboard.press("Escape")
+        try:
+            atual = target.input_value() if target.evaluate("(el) => el.tagName === 'INPUT'") else target.inner_text()
+        except Exception:
+            atual = ""
+        return _ranking(atual) is not None
+
+    _abrir()
+    if _escolher():
+        return True
+    # Combobox que filtra opções ao digitar: limpar antes para não duplicar.
+    _abrir()
     try:
-        target.click(timeout=5000)
+        target.fill("")
     except Exception:
-        target.evaluate("(el) => el.click()")
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
     page.keyboard.type(escolhido)
+    if _escolher():
+        return True
     page.keyboard.press("Enter")
-    page.wait_for_timeout(150)
-    return target.inner_text().strip() == escolhido
+    page.wait_for_timeout(200)
+    return False
 
 
 def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
@@ -842,8 +1016,15 @@ def submission_state(page: Any) -> str:
         text = (page.locator("body").inner_text() or "").lower()
     except Exception:
         return "unknown"
-    if any(mark in text for mark in _BLOCK_MARKS):
+    if platform_block(text):
         return "blocked"
     if any(mark in text for mark in _CONFIRM_MARKS):
+        return "submitted"
+    # Portais que confirmam só por URL: exigimos também texto de candidatura,
+    # para não confundir "/complete" de cadastro com envio de formulário.
+    url = str(getattr(page, "url", "") or "")
+    if _CONFIRM_URL.search(url) and re.search(
+        r"application|candidatura|inscri[cç][aã]o|solicitud|postula", text, re.I
+    ):
         return "submitted"
     return "unknown"

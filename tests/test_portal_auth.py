@@ -10,8 +10,10 @@ from src.agents.browser_apply import ApplyObservation, BrowserApplyAgent
 from src.core.config import PortalAuthConfig, Settings
 from src.core.errors import BlockedByPlatformError, HumanActionRequired
 from src.core.state import JobStatus
+from src.execution.forms.answers import AnswerResolver
 from src.execution.web.portal_credentials import PortalCredentialStore
 from src.models.domain import Application, CandidateProfile, JobOpportunity
+from src.models.schemas import ConsentDecision
 
 PASSWORD_DOMAIN = "portal.example.com"
 PORTAL_DOMAIN = "applicants.bairesdev.com"
@@ -157,6 +159,22 @@ class FakeRepo:
         self.updated.append(job)
 
 
+class FakeConsentRouter:
+    """DGX falso: aceita apenas o que passa pela barreira do agente."""
+
+    def structured(self, _messages, schema):
+        assert schema is ConsentDecision
+        return ConsentDecision(allow=True, source="dgx", reason="aceite operacional")
+
+
+class FakePatternStore:
+    def suggest_action(self, *_args, **_kwargs):
+        return None
+
+    def record_action(self, *_args, **_kwargs):
+        return None
+
+
 def _agent(
     monkeypatch: pytest.MonkeyPatch,
     creds: tuple[str, str] | None = None,
@@ -176,6 +194,8 @@ def _agent(
     agent.bus = None
     agent.repo = FakeRepo()
     agent.profile = CandidateProfile()
+    agent.resolver = AnswerResolver(CandidateProfile(), FakeConsentRouter(), settings)
+    agent.patterns = FakePatternStore()
     return agent
 
 
@@ -306,21 +326,23 @@ ALIGNERR_DOMAIN = "app.alignerr.com"
 ALIGNERR_TERMS = (
     "I agree to the Terms of Service, Privacy Policy and Release Agreement"
 )
+ALIGNERR_CONSENT = "I agree to Candidate Terms"
 
 
-def test_alignerr_config_requires_terms_before_google_oauth() -> None:
+def test_alignerr_config_has_no_fixed_terms_rule() -> None:
     cfg = Settings().application.portal_auth[ALIGNERR_DOMAIN]
 
     assert cfg.company == "Alignerr"
     assert cfg.auth_mode == "google"
     assert cfg.oauth_account_email == "addamreis@gmail.com"
-    assert cfg.terms_checkbox_required is True
-    assert ALIGNERR_TERMS in cfg.terms_checkbox_labels
+    # Aceites são conhecimento do agente, não regra por empresa.
+    assert getattr(cfg, "terms_checkbox_required", None) is None
+    assert getattr(cfg, "terms_checkbox_labels", None) is None
     assert "Continue with Google" in cfg.oauth_labels
     assert "Continue with LinkedIn" in cfg.oauth_fallback_labels
 
 
-def test_alignerr_terms_are_accepted_before_google_oauth(
+def test_agent_accepts_operational_consent_before_google_oauth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     eventos: list[tuple[str, dict]] = []
@@ -359,10 +381,10 @@ def test_alignerr_terms_are_accepted_before_google_oauth(
             if "has_form" in script:
                 return {
                     "url": self.url,
-                    "text": ALIGNERR_TERMS if not self.terms_checked else "Welcome",
+                    "text": ALIGNERR_CONSENT if not self.terms_checked else "Welcome",
                     "buttons": [{"text": "Continue with Google", "href": ""}],
                     "checkboxes": [
-                        {"text": ALIGNERR_TERMS, "checked": self.terms_checked}
+                        {"text": ALIGNERR_CONSENT, "checked": self.terms_checked}
                     ],
                     "has_form": self.autenticado,
                     "has_file": False,
@@ -389,7 +411,7 @@ def test_alignerr_terms_are_accepted_before_google_oauth(
         "src.agents.browser_apply.snapshot_form",
         lambda p: {
             "url": p.url,
-            "text": ALIGNERR_TERMS if not p.terms_checked else "Welcome",
+            "text": ALIGNERR_CONSENT if not p.terms_checked else "Welcome",
         },
     )
 
@@ -399,6 +421,35 @@ def test_alignerr_terms_are_accepted_before_google_oauth(
     assert page.terms_checked is True
     assert chamadas == [(ALIGNERR_DOMAIN, "Alignerr", True)]
     assert any(event == "portal_terms_accepted" for event, _ in eventos)
+
+
+def test_agent_stops_on_legal_terms_without_human_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(monkeypatch, domain=ALIGNERR_DOMAIN)
+
+    class Page:
+        url = "https://app.alignerr.com/signin?job=fd47"
+
+        def evaluate(self, script, *_args):
+            if "has_form" in script:
+                return {
+                    "url": self.url,
+                    "text": ALIGNERR_TERMS,
+                    "buttons": [],
+                    "checkboxes": [{"text": ALIGNERR_TERMS, "checked": False}],
+                    "has_form": False,
+                    "has_file": False,
+                    "blocked": False,
+                    "passwords": 0,
+                }
+            return {}
+
+        def wait_for_timeout(self, _ms) -> None:
+            return None
+
+    with pytest.raises(HumanActionRequired, match="termos"):
+        agent._ensure_external_entry(Page())
 
 
 def test_google_oauth_stops_when_password_is_requested(

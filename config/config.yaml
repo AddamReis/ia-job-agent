@@ -5,9 +5,9 @@ app:
 
 llm:
   # Somente LLMs locais do DGX. Sem LM Studio/Ollama nesta maquina.
-  # Apply/desenvolvimento usam o 27B denso; runners usam o MoE menor em :8012.
+  # Apply e runners usam o provider DGX ativo; nunca ha fallback externo.
   primary: "dgx"
-  runner: "dgx_runner"
+  runner: "dgx"
   fallback: null
   temperature: 0.1
   max_retries: 2
@@ -223,11 +223,9 @@ application:
       oauth_continue_labels: ["Continuar", "Continue", "Aceitar e continuar"]
       # Se o Google pedir senha/verificação, usar a sessão LinkedIn do Chrome uma vez.
       oauth_fallback_labels: ["Continue with LinkedIn", "Entrar com LinkedIn"]
-      # O botão Google fica desabilitado até o checkbox de termos ser marcado.
-      terms_checkbox_required: true
-      terms_checkbox_labels:
-        - "I agree to the Terms of Service, Privacy Policy and Release Agreement"
-        - "Concordo com os Termos de Serviço, Política de Privacidade e Acordo de Liberação"
+      # Aceites na tela são decididos pelo agente (DGX + memória local), nunca
+      # por rótulo fixo de empresa: o botão Google pode exigir um aceite, mas
+      # somente um consentimento operacional pode ser marcado sem humano.
   channel_priority: ["easy_apply", "known_portal", "external_portal"]
   # Prioridade geografica (antes do canal): America do Norte > AU > NZ > Europa > Brasil.
   region_priority: ["latam", "americas_north", "australia", "new_zealand", "europe", "brazil", "other"]

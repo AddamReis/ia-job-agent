@@ -54,15 +54,15 @@ documents:
   resume: "C:/Users/addam/Downloads/Addam dos Reis Oliveira - Software Engineer.pdf"
 
 answers:
-  - match: "(autoriz|concordo|aceito).*(dados|privacidade|termos|politica)"
+  - match: "(autoriz|concordo|aceito|i agree|i accept).*(dados|privacidade|termos|politica|terms|privacy)"
     value: true
   - match: "aceito (receber|compartilhar)|opt.in|newsletter"
     value: true
-  - match: "pretens[aã]o salarial|sal[aá]rio pretendido|expected salary"
+  - match: "pretens[aã]o salarial|sal[aá]rio pretendido|expected salary|desired salary|salario deseado|csalary|expectativa salarial"
     value: "A combinar"
   - match: "disponibilidade|quando (voc[eê] |)pode come[cç]ar|notice period"
     value: "Imediata"
-  - match: "como (voc[eê] )?soube|onde (voc[eê] )?encontrou|refer[eê]ncia|source"
+  - match: "como (voc[eê] )?soube|onde (voc[eê] )?encontrou|refer[eê]ncia|source|how did you hear"
     value: "LinkedIn"
   - match: "j[aá] trabalhou|j[aá] atuou|experi[eê]ncia pr[eé]via|already worked"
     value: "Sim"

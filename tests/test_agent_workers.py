@@ -16,6 +16,7 @@ from src.agents.classification_worker import (
 )
 from src.agents.submit_worker import SubmitWorker, submit_preflight
 from src.core.config import Settings
+from src.core.errors import JobUnavailable
 from src.core.events import EventBus
 from src.core.state import JobStatus
 from src.execution.web.site_patterns import SitePatternStore
@@ -388,12 +389,34 @@ def test_submit_worker_sends_only_after_review_check() -> None:
     counters = SubmitWorker(repo, _settings(), agent, bus).run()
 
     event_id = repo.agent_event_id("apply_submit", "review.approved", job.id)
-    assert counters == {"events": 1, "submitted": 1, "blocked": 0, "errors": 0}
+    assert counters == {
+        "events": 1, "submitted": 1, "blocked": 0, "unavailable": 0, "errors": 0
+    }
     assert [(item[0].id, item[1].id, item[2]) for item in agent.calls] == [
         (job.id, approval.id, True)
     ]
     assert repo.events[event_id]["status"] == "ACK"
     assert "application.submitted" in events
+
+
+def test_submit_worker_closes_unavailable_job_without_error() -> None:
+    job, approval = _approved_job()
+    repo = StubRepo([job])
+    repo.approvals[job.id] = approval
+    repo.publish_agent_event(
+        "apply_submit", "review.approved", job.id, {"approval_id": approval.id}
+    )
+
+    class UnavailableAgent:
+        def submit(self, *_args, **_kwargs):
+            raise JobUnavailable("a vaga não aceita mais candidaturas")
+
+    counters = SubmitWorker(repo, _settings(), UnavailableAgent()).run()
+    event_id = repo.agent_event_id("apply_submit", "review.approved", job.id)
+
+    assert counters["unavailable"] == 1
+    assert counters["errors"] == 0
+    assert repo.events[event_id]["status"] == "ACK"
 
 
 def test_submit_worker_revalidates_recency_before_sending() -> None:
@@ -408,7 +431,9 @@ def test_submit_worker_revalidates_recency_before_sending() -> None:
     counters = SubmitWorker(repo, _settings(), agent).run()
 
     event_id = repo.agent_event_id("apply_submit", "review.approved", job.id)
-    assert counters == {"events": 1, "submitted": 0, "blocked": 1, "errors": 0}
+    assert counters == {
+        "events": 1, "submitted": 0, "blocked": 1, "unavailable": 0, "errors": 0
+    }
     assert agent.calls == []
     assert repo.events[event_id]["status"] == "FAILED"
     assert "recência" in repo.events[event_id]["error"]
@@ -432,7 +457,9 @@ def test_direct_approval_from_qualified_job_is_submitted_without_prepare_step() 
 
     counters = SubmitWorker(repo, _settings(), agent).run()
 
-    assert counters == {"events": 1, "submitted": 1, "blocked": 0, "errors": 0}
+    assert counters == {
+        "events": 1, "submitted": 1, "blocked": 0, "unavailable": 0, "errors": 0
+    }
     assert [(item[0].id, item[1].id, item[2]) for item in agent.calls] == [
         (job.id, approval.id, True)
     ]

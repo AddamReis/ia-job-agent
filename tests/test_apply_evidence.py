@@ -20,6 +20,7 @@ from src.core.state import JobStatus
 from src.execution.web.form_dom import (
     capture_screenshot,
     click_next,
+    is_experience_step,
     next_step_label,
 )
 from src.execution.web.site_patterns import SitePatternStore
@@ -206,7 +207,7 @@ def test_walk_steps_recomputes_all_steps_for_approval(
     )
     rotulos = iter(["Next", ""])
     avancos: list[str] = []
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (page, snap, "already_attached"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form", lambda page: next(snapshots)
     )
@@ -250,7 +251,7 @@ def test_walk_steps_retries_resume_until_later_step(
     def handle(page, snap):
         status = next(statuses)
         tentativas.append(status)
-        return snap, status
+        return page, snap, status
 
     monkeypatch.setattr(agent, "_handle_resume", handle)
     monkeypatch.setattr(
@@ -270,6 +271,18 @@ def test_walk_steps_retries_resume_until_later_step(
 
     assert [step.number for step in steps] == [1, 2]
     assert tentativas == ["upload_button_not_found", "uploaded"]
+
+
+def test_professional_profile_description_is_not_experience_step() -> None:
+    snapshot = {
+        "text": (
+            "Professional Profile\n"
+            "We use LinkedIn to review your professional work experience.\n"
+            "Submit Your Application"
+        )
+    }
+    assert not is_experience_step(snapshot)
+    assert is_experience_step({"text": "Work experience\nAdd additional role"})
 
 
 def test_walk_steps_skips_experience_step_and_removes_extra(
@@ -296,7 +309,7 @@ def test_walk_steps_skips_experience_step_and_removes_extra(
     removal_results = iter([True, False])
     labels = iter(["Next", ""])
 
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (page, snap, "already_attached"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form", lambda page: next(snapshots)
     )
@@ -330,7 +343,7 @@ def test_walk_steps_blocks_submit_without_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     agent = _walk_agent(tmp_path)
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "upload_button_not_found"))
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (page, snap, "upload_button_not_found"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form",
         lambda page: _snapshot("https://portal.test/step-1", "Email"),
@@ -348,7 +361,7 @@ def test_walk_steps_stops_on_captcha(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     agent = _walk_agent(tmp_path)
-    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (snap, "already_attached"))
+    monkeypatch.setattr(agent, "_handle_resume", lambda page, snap: (page, snap, "already_attached"))
     monkeypatch.setattr(
         "src.agents.browser_apply.snapshot_form", lambda page: _snapshot("https://x.test", "Email")
     )

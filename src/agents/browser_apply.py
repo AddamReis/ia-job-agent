@@ -16,10 +16,16 @@ from enum import Enum
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from ..core.config import Settings
-from ..core.errors import BlockedByPlatformError, HumanActionRequired, ValidationError
+from ..core.errors import (
+    BlockedByPlatformError,
+    HumanActionRequired,
+    JobUnavailable,
+    ValidationError,
+)
 from ..core.events import EventBus
 from ..core.logging import log_event
 from ..core.state import JobStatus
@@ -29,10 +35,12 @@ from ..execution.web.form_dom import (
     capture_screenshot,
     click_next,
     click_submit,
+    credential_barrier,
     ensure_resume_uploaded,
     fill_field,
     is_experience_step,
     next_step_label,
+    platform_block,
     remove_extra_experience_entry,
     resume_attached_on_page,
     snapshot_form,
@@ -93,6 +101,7 @@ _ALIGNERR_PREFERENCES = (
     "Coding", "Engineering", "Mathematics", "Voice Acting", "Science",
     "Writing", "Law", "Medicine", "Finance", "Education", "Language",
 )
+_CONSENT_INTENT = "accept_application_consent"
 
 _LANDING_STATE_JS = r"""
 () => {
@@ -134,8 +143,8 @@ _LANDING_STATE_JS = r"""
       .filter(visible).length > 0,
     passwords: [...document.querySelectorAll('input[type=password]')]
       .filter(visible).length,
-    blocked: /captcha|verifica[cç][aã]o|unusual activity|atividade incomum/i
-      .test(body.slice(0, 3000)),
+    blocked: /captcha|unusual activity|atividade incomum|confirm you are human|verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|verificaci[oó]n de (?:humanidad|seguridad|identidad)|checkpoint/i
+      .test(body.slice(0, 3000).replace(/protected by reCAPTCHA/gi, ' ')),
   };
 }
 """
@@ -261,6 +270,9 @@ class BrowserApplyAgent:
         self._pending: dict[str, PreparedForm] = {}
         # Ações de UI observadas nesta execução só viram memória após o envio.
         self._pending_ui_actions: list[dict[str, Any]] = []
+        # Durante o submit existe aprovação persistida; em ``prepare`` ainda não.
+        # O agente usa isso apenas como contexto para aceites operacionais.
+        self._consent_authorized = False
 
     @staticmethod
     def _evidence_dir(job: JobOpportunity) -> Path:
@@ -273,6 +285,16 @@ class BrowserApplyAgent:
         if submission_state(page) == "blocked":
             raise BlockedByPlatformError(
                 "verificação/CAPTCHA no formulário; o agente não interage"
+            )
+
+    @staticmethod
+    def _ensure_no_credential_barrier(page: Any) -> None:
+        """Barreira dura: conta/senha/MFA nunca são preenchidos pelo agente."""
+        motivo = credential_barrier(page)
+        if motivo:
+            raise HumanActionRequired(
+                "credencial",
+                f"o portal pediu {motivo}; o agente não cria conta nem digita credencial",
             )
 
     def _walk_steps(
@@ -293,6 +315,7 @@ class BrowserApplyAgent:
         resume_ready = False
         for number in range(1, _MAX_FORM_STEPS + 1):
             self._ensure_not_blocked(page)
+            self._ensure_no_credential_barrier(page)
             snapshot = snapshot_form(page)
             # SPAs (Alignerr) montam os steps depois do JavaScript. Sem isso o
             # agente lê um formulário vazio e tenta submeter antes dos campos.
@@ -306,9 +329,10 @@ class BrowserApplyAgent:
                 # Em candidaturas paginadas o campo de CV pode aparecer só no
                 # step 2/3. Tentar em cada step evita reprovar o envio antes da
                 # hora; a checagem final barra qualquer envio sem currículo.
-                snapshot, status = self._handle_resume(page, snapshot)
+                page, snapshot, status = self._handle_resume(page, snapshot)
                 resume_ready = status in {"uploaded", "selected", "already_attached"}
                 self._ensure_not_blocked(page)
+                self._ensure_no_credential_barrier(page)
             max_experiences = max(
                 1,
                 int(
@@ -497,6 +521,7 @@ class BrowserApplyAgent:
                 return page, snapshot, observation
             page, snapshot = self._ensure_external_entry(page, snapshot=snapshot)
             page = self._advance_external_landing(page)
+            self._ensure_no_credential_barrier(page)
             snapshot = snapshot_form(page)
             if self._detect_already_applied(page, snapshot):
                 observation.already_applied = True
@@ -512,7 +537,14 @@ class BrowserApplyAgent:
         )
         if any(mark in text for mark in closed_marks):
             self.browser.close_tab(page)
-            raise ValidationError("a vaga não aceita mais candidaturas no LinkedIn")
+            # Vaga encerrada não é erro de automação: vira EXPIRED e a falha
+            # antiga sai da aba Erros, preservando o motivo no banco.
+            job.status = JobStatus.EXPIRED
+            self.repo.update_job(job)
+            resolver = getattr(self.repo, "resolve_failed_agent_events", None)
+            if callable(resolver):
+                resolver(job.id)
+            raise JobUnavailable("a vaga não aceita mais candidaturas no LinkedIn")
         has_easy_text = any(label.lower() in text for label in _EASY_APPLY_LABELS)
         has_external_text = any(label.lower() in text for label in _EXTERNAL_APPLY_LABELS)
         has_apply_label = has_easy_text or has_external_text
@@ -586,6 +618,7 @@ class BrowserApplyAgent:
                     snapshot = snapshot_form(page)
                 elif domain_of(page.url) != "linkedin.com":
                     page = self._advance_external_landing(page)
+                    self._ensure_no_credential_barrier(page)
                     snapshot = snapshot_form(page)
                 if self._detect_already_applied(page, snapshot):
                     observation.already_applied = True
@@ -653,6 +686,26 @@ class BrowserApplyAgent:
     def _normalize_landing_signature(labels: list[str]) -> str:
         return re.sub(r"\W+", " ", " ".join(labels).lower()).strip()[:300]
 
+    @staticmethod
+    def _is_apply_cta_label(label: str) -> bool:
+        """Reconhece CTA de candidatura, sem confundir com login/OAuth."""
+        texto = re.sub(r"\s+", " ", str(label or "").strip())
+        if re.search(
+            r"linkedin|indeed|google|facebook|apple|oauth|sign in|iniciar sess|login",
+            texto,
+            re.I,
+        ):
+            return False
+        return bool(
+            re.match(
+                r"^(?:apply|aplicar|candidatar-se|candidate-se|"
+                r"candidatura externa|start application|apply for this job|"
+                r"apply to this job|candidate-se a esta vaga|submit application)\b",
+                texto,
+                re.I,
+            )
+        )
+
     def _landing_state(self, page: Any) -> dict[str, Any]:
         """Lê o que está renderizado (main + iframes) ANTES de qualquer clique."""
         principal = page.evaluate(_LANDING_STATE_JS) or {}
@@ -716,14 +769,7 @@ class BrowserApplyAgent:
             "checkboxes": checkboxes,
             "has_form": has_form,
             "has_file": has_file,
-            "blocked": blocked
-            or bool(
-                re.search(
-                    r"captcha|verifica[cç][aã]o|unusual activity|atividade incomum",
-                    texto,
-                    re.I,
-                )
-            ),
+            "blocked": blocked or platform_block(texto),
             "passwords": passwords,
             "login": _is_login_page(url, texto) or passwords > 0,
             "terms_checkbox": bool(
@@ -884,6 +930,15 @@ class BrowserApplyAgent:
             == BrowserApplyAgent._normalize_landing_signature([label])
         ] or [{"frame_index": 0, "text": label, "href": ""}]
         for item in alvos:
+            href = BrowserApplyAgent._unwrap_href(str(item.get("href") or ""))
+            # Landing iCIMS (Avalara) abre o formulário dentro de iframe; seguir
+            # o href real lido na tela leva ao mesmo formulário na aba principal.
+            if href.startswith(("http://", "https://")) and hasattr(page, "goto"):
+                try:
+                    page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                    return True
+                except Exception:
+                    pass
             frame = BrowserApplyAgent._frame_at(page, int(item.get("frame_index") or 0))
             if BrowserApplyAgent._click_by_label(frame, label):
                 return True
@@ -892,16 +947,11 @@ class BrowserApplyAgent:
                     return True
             except Exception:
                 pass
-            href = BrowserApplyAgent._unwrap_href(str(item.get("href") or ""))
-            if href.startswith(("http://", "https://")) and hasattr(page, "goto"):
-                try:
-                    page.goto(href, wait_until="domcontentloaded", timeout=30000)
-                    return True
-                except Exception:
-                    continue
         return False
 
-    _TERMS_RE = re.compile(
+    # Dica semântica ampla: qualquer aceite na tela passa pelo julgamento do
+    # agente. Não há rótulo por empresa nem lista fixa de termos aceitos.
+    _CONSENT_HINT_RE = re.compile(
         r"agree|aceite|concordo|accept|terms|termos|privacy|privacidade|release agreement",
         re.I,
     )
@@ -930,64 +980,131 @@ class BrowserApplyAgent:
     }
     """
 
+    @staticmethod
+    def _consent_signature(texto: str) -> str:
+        return re.sub(r"\W+", " ", str(texto or "").casefold()).strip()[:200]
+
+    @staticmethod
+    def _consent_text(item: dict[str, Any]) -> str:
+        return str(item.get("text") or item.get("aria") or "").strip()
+
     @classmethod
-    def _is_terms_checkbox(cls, item: dict[str, Any], cfg: Any) -> bool:
-        textos = [str(item.get("text") or ""), str(item.get("aria") or "")]
-        textos.extend(str(v) for v in getattr(cfg, "terms_checkbox_labels", []) or [])
-        return any(cls._TERMS_RE.search(texto) for texto in textos if texto)
+    def _is_consent_checkbox(cls, item: dict[str, Any]) -> bool:
+        return any(
+            cls._CONSENT_HINT_RE.search(texto)
+            for texto in (cls._consent_text(item), str(item.get("aria") or ""))
+            if texto
+        )
+
+    def _approval_context(self) -> str:
+        if getattr(self, "_consent_authorized", False):
+            return (
+                "A candidatura tem aprovação humana persistida na PWA. Isso autoriza "
+                "o envio e aceites operacionais, nunca uma barreira sensível."
+            )
+        return (
+            "Etapa de preparação: ainda não existe aprovação persistida para o envio. "
+            "Avalie apenas o texto renderizado e as barreiras sensíveis."
+        )
+
+    def _consent_decision(
+        self, url: str, texto: str, screen_context: str
+    ) -> Any:
+        """Pergunta ao agente (DGX + memória local) sobre um aceite na tela."""
+        assinatura = self._consent_signature(texto)
+        learned = self.patterns.suggest_action(url, _CONSENT_INTENT, assinatura)
+        memoria = ""
+        if learned:
+            memoria = (
+                f"ação={learned.get('action','')}; "
+                f"êxitos={learned.get('successes', 0)}; "
+                f"falhas={learned.get('failures', 0)}; "
+                f"motivo={learned.get('reason','')}"
+            )
+        resolver = getattr(self, "resolver", None)
+        if resolver is None:
+            return SimpleNamespace(
+                allow=False, needs_human=True, reason="agente sem resolvedor de aceites"
+            )
+        decision = resolver.interpret_consent(
+            texto,
+            screen_context,
+            approval_context=self._approval_context(),
+            memory_context=memoria,
+        )
+        if learned and learned.get("action") == "aceitar" and getattr(decision, "allow", False):
+            decision.source = "learned"
+            decision.reason = str(learned.get("reason") or decision.reason)
+        if getattr(decision, "allow", False):
+            self._queue_ui_action(
+                {
+                    "url": url,
+                    "intent": _CONSENT_INTENT,
+                    "trigger": assinatura,
+                    "action": "aceitar",
+                    "dialog_signature": assinatura,
+                    "source": str(getattr(decision, "source", "") or "llm"),
+                    "reason": str(getattr(decision, "reason", "") or ""),
+                }
+            )
+        return decision
 
     def _accept_terms_if_needed(
-        self, page: Any, estado: dict[str, Any], cfg: Any
+        self, page: Any, estado: dict[str, Any], cfg: Any = None, *, tela: str = "landing"
     ) -> Any:
-        """Aceita apenas o checkbox de termos configurado no portal conhecido."""
-        if cfg is None or not getattr(cfg, "terms_checkbox_required", False):
-            return page
-        todos = list(estado.get("checkboxes") or [])
-        relevantes = [item for item in todos if self._is_terms_checkbox(item, cfg)]
-        pendentes = [item for item in relevantes if not item.get("checked")]
+        """Deixa o agente julgar cada aceite operacional visível na tela.
+
+        Não existe configuração por portal: o modelo lê o texto renderizado,
+        usa aceites já aprendidos como conhecimento e para diante de qualquer
+        termo legal/sensível sem evidência humana explícita.
+        """
+        dominio = domain_of(str(estado.get("url") or page.url or ""))
+        pendentes = [
+            item
+            for item in (estado.get("checkboxes") or [])
+            if not item.get("checked") and self._is_consent_checkbox(item)
+        ]
         if not pendentes:
-            if estado.get("terms_checkbox") and not relevantes:
-                raise HumanActionRequired(
-                    "termos",
-                    "o portal exige aceite de termos, mas o checkbox não foi encontrado",
-                )
             return page
 
         for item in pendentes:
+            texto = self._consent_text(item)
+            if not texto:
+                raise HumanActionRequired(
+                    "termos", "aceite sem texto renderizado; não é possível interpretar"
+                )
+            decisao = self._consent_decision(
+                str(estado.get("url") or page.url or ""),
+                texto,
+                f"Aceite encontrado na {tela}. Texto visível da tela: "
+                f"{str(estado.get('text') or '')[:1200]}",
+            )
+            if not getattr(decisao, "allow", False):
+                raise HumanActionRequired(
+                    "termos",
+                    str(getattr(decisao, "reason", "") or "aceite exige decisão humana"),
+                )
             frame = self._frame_at(page, int(item.get("frame_index") or 0))
-            texto = str(item.get("text") or item.get("aria") or "")
             clicou = False
-            rotulos = [texto] + list(getattr(cfg, "terms_checkbox_labels", []) or [])
-            # Primeiro o input real: em MUI o texto ao lado não é um <label>.
-            for rotulo in rotulos:
-                if not rotulo:
-                    continue
+            try:
+                clicou = bool(frame.evaluate(self._JS_CHECK_TERMS, texto))
+            except Exception:
+                clicou = False
+            if not clicou:
                 try:
-                    clicou = bool(frame.evaluate(self._JS_CHECK_TERMS, rotulo))
+                    locator = frame.get_by_text(texto, exact=False)
+                    for indice in range(min(int(locator.count() or 0), 4)):
+                        alvo = locator.nth(indice)
+                        if hasattr(alvo, "is_visible") and not alvo.is_visible():
+                            continue
+                        alvo.click()
+                        clicou = True
+                        break
                 except Exception:
                     clicou = False
-                if clicou:
-                    break
-            if not clicou:
-                for rotulo in rotulos:
-                    if not rotulo:
-                        continue
-                    try:
-                        locator = frame.get_by_text(rotulo, exact=False)
-                        for indice in range(min(int(locator.count() or 0), 4)):
-                            alvo = locator.nth(indice)
-                            if hasattr(alvo, "is_visible") and not alvo.is_visible():
-                                continue
-                            alvo.click()
-                            clicou = True
-                            break
-                    except Exception:
-                        continue
-                    if clicou:
-                        break
             if not clicou:
                 raise HumanActionRequired(
-                    "termos", "não foi possível marcar o aceite de termos exibido"
+                    "termos", "não foi possível marcar o aceite exibido na tela"
                 )
             page.wait_for_timeout(400)
 
@@ -995,16 +1112,17 @@ class BrowserApplyAgent:
         ainda_pendente = [
             item
             for item in (novo.get("checkboxes") or [])
-            if self._is_terms_checkbox(item, cfg) and not item.get("checked")
+            if not item.get("checked") and self._is_consent_checkbox(item)
         ]
         if ainda_pendente:
             raise HumanActionRequired(
-                "termos", "o aceite de termos não foi confirmado na tela"
+                "termos", "o aceite não foi confirmado na tela"
             )
         log_event(
             "portal_terms_accepted",
-            domain=domain_of(str(novo.get("url") or page.url)),
-            company=cfg.company,
+            domain=dominio,
+            company=str(getattr(cfg, "company", "") or ""),
+            source="agent",
         )
         return page
 
@@ -1023,19 +1141,18 @@ class BrowserApplyAgent:
         if settings is not None:
             dominio = domain_of(str(estado.get("url") or page.url))
             cfg = settings.application.portal_auth.get(dominio)
-        if cfg is not None:
-            if known_portal or estado.get("login") or estado.get("terms_checkbox"):
-                page = self._accept_terms_if_needed(page, estado, cfg)
-                page = self._ensure_portal_login(page)
-                snapshot = snapshot_form(page)
-            else:
-                snapshot = snapshot or {}
+        # O aceite é avaliado pelo agente em QUALQUER portal — nunca por uma
+        # chave de configuração por empresa.
+        if known_portal or estado.get("login") or estado.get("terms_checkbox"):
+            page = self._accept_terms_if_needed(page, estado, cfg, tela="landing")
+        if cfg is not None and (known_portal or estado.get("login")):
+            page = self._ensure_portal_login(page)
+            snapshot = snapshot_form(page)
+        elif estado.get("login") or estado.get("passwords"):
+            snapshot = snapshot if snapshot is not None else snapshot_form(page)
+            self._ensure_no_login(page, snapshot)
         else:
-            if estado.get("login") or estado.get("passwords"):
-                snapshot = snapshot if snapshot is not None else snapshot_form(page)
-                self._ensure_no_login(page, snapshot)
-            else:
-                snapshot = snapshot or {}
+            snapshot = snapshot or {}
         return page, snapshot
 
     def _advance_external_landing(self, page: Any) -> Any:
@@ -1113,13 +1230,34 @@ class BrowserApplyAgent:
             )
             acao = str(getattr(decidido, "action", "") or "").strip()
             if getattr(decidido, "needs_human", False):
-                raise HumanActionRequired(
-                    "landing externa",
-                    str(
-                        getattr(decidido, "reason", "")
-                        or "nenhum CTA seguro identificado"
-                    ),
-                )
+                # Se a própria tela mostra um único CTA explícito de candidatura,
+                # ele é evidência suficiente: não depender do LLM para avançar.
+                candidatos_seguros = [
+                    item
+                    for item in explicitos
+                    if self._is_apply_cta_label(str(item.get("text", "")))
+                ]
+                if len(candidatos_seguros) == 1:
+                    acao = str(candidatos_seguros[0]["text"]).strip()
+                    decidido = SimpleNamespace(
+                        action=acao,
+                        source="regra:cta_explicito_na_tela",
+                        reason="CTA de candidatura único e visível na landing",
+                        needs_human=False,
+                    )
+                    log_event(
+                        "browser_apply_landing_cta_direto",
+                        action=acao[:80],
+                        url=str(state.get("url", ""))[:160],
+                    )
+                else:
+                    raise HumanActionRequired(
+                        "landing externa",
+                        str(
+                            getattr(decidido, "reason", "")
+                            or "nenhum CTA seguro identificado"
+                        ),
+                    )
             normalizados = {
                 self._normalize_landing_signature([label]) for label in rotulos
             }
@@ -1182,10 +1320,6 @@ class BrowserApplyAgent:
     # o agente para no mesmo gate humano (nunca digita senha nem resolve MFA).
     _LINKEDIN_CHALLENGE_URL = re.compile(
         r"linkedin\.com/(?:checkpoint|authwall|u/login|login)", re.I
-    )
-    _CAPTCHA_TEXT = (
-        "captcha", "unusual traffic", "verificação", "verificacao",
-        "verificacion", "confirm you are human", "2fa", "mfa",
     )
     _OAUTH_FALLBACK_CONTINUE_LABELS = (
         "Allow", "Authorize", "Accept", "Permitir", "Autorizar",
@@ -1254,8 +1388,8 @@ class BrowserApplyAgent:
 
     @classmethod
     def _block_oauth_captcha(cls, texto: str, provedor: str) -> None:
-        baixo = str(texto or "").lower()
-        if any(sinal in baixo for sinal in cls._CAPTCHA_TEXT):
+        texto = str(texto or "")
+        if platform_block(texto) or re.search(r"\b(?:2fa|mfa)\b", texto, re.I):
             raise BlockedByPlatformError(
                 f"verificação/CAPTCHA no OAuth {provedor}; agente não interage"
             )
@@ -1399,7 +1533,9 @@ class BrowserApplyAgent:
         page = pagina_portal
         # A aba do portal pode ter voltado ao /signin com os termos desmarcados
         # quando o popup do Google foi aberto. Reler e aceitar antes de clicar.
-        page = self._accept_terms_if_needed(page, self._landing_state(page), cfg)
+        page = self._accept_terms_if_needed(
+            page, self._landing_state(page), cfg, tela="entrada alternativa"
+        )
         continuar = list(self._OAUTH_FALLBACK_CONTINUE_LABELS) + list(
             cfg.oauth_continue_labels or []
         )
@@ -1577,11 +1713,11 @@ class BrowserApplyAgent:
         url = str(snapshot.get("url", "") or page.url)
         texto = str(snapshot.get("text", "") or "").lower()
         if self._portal_needs_login(page, snapshot):
-            sinais_verificacao = (
-                "captcha", "just a moment", "verificação", "verificacao",
-                "verificacion", "confirm you are human", "mfa", "2fa",
-            )
-            if any(sinal in texto for sinal in sinais_verificacao):
+            if (
+                platform_block(texto)
+                or "just a moment" in str(texto).lower()
+                or re.search(r"\b(?:2fa|mfa)\b", str(texto), re.I)
+            ):
                 raise BlockedByPlatformError(
                     f"verificação/CAPTCHA no login de {dominio}; agente não interage"
                 )
@@ -1774,7 +1910,11 @@ class BrowserApplyAgent:
         return decision
 
     def _queue_ui_action(self, info: dict[str, Any]) -> None:
-        self._pending_ui_actions.append(dict(info))
+        pending = getattr(self, "_pending_ui_actions", None)
+        if pending is None:
+            pending = []
+            self._pending_ui_actions = pending
+        pending.append(dict(info))
 
     def _flush_ui_actions(self, *, success: bool) -> None:
         if not self._pending_ui_actions:
@@ -1805,15 +1945,35 @@ class BrowserApplyAgent:
 
     def _handle_resume(
         self, page: Any, snapshot: dict[str, Any]
-    ) -> tuple[dict[str, Any], str]:
-        """Tenta anexar o CV no step atual e devolve ``(snapshot, status)``.
+    ) -> tuple[Any, dict[str, Any], str]:
+        """Anexa o CV e devolve ``(página, snapshot, status)``.
 
-        ``upload_button_not_found`` é provisório: em formulários paginados o
-        controle de upload aparece em steps posteriores. A checagem final em
-        ``_walk_steps`` impede o envio caso nenhum step tenha anexado o CV.
+        ``upload_button_not_found`` é provisório: em landing externa o botão
+        "Apply" ainda precisa ser clicado, e em formulários paginados o controle
+        aparece em steps posteriores. Nunca faz Submit.
         """
+        self._ensure_no_credential_barrier(page)
         cv_path = self._cv_path()
         status = ensure_resume_uploaded(page, cv_path)
+        pendente = {
+            "upload_button_not_found", "file_input_not_found", "resume_input_not_found",
+        }
+        if status in pendente:
+            # A tela ainda é a landing da vaga (careerpuck/iCIMS/Greenhouse):
+            # abrir o formulário real usando apenas CTA visível na própria tela.
+            for _ in range(2):
+                atual = snapshot_form(page)
+                if atual.get("fields"):
+                    break
+                try:
+                    page = self._advance_external_landing(page)
+                except (HumanActionRequired, BlockedByPlatformError):
+                    raise
+                except Exception:
+                    break
+                status = ensure_resume_uploaded(page, cv_path)
+                if status not in pendente:
+                    break
         if status in {"upload_button_not_found", "file_input_not_found", "unverified"}:
             # O upload pode ter ocorrido na aba anterior do mesmo fluxo
             # (Alignerr: /upload-resume -> /profile). Nesse caso o step atual
@@ -1840,14 +2000,16 @@ class BrowserApplyAgent:
             raise BlockedByPlatformError("verificação/CAPTCHA ao anexar currículo")
         if status == "missing":
             raise ValidationError("currículo informado não existe")
-        invalid = {"select_failed", "file_input_not_found", "unverified"}
+        invalid = {
+            "select_failed", "file_input_not_found", "resume_input_not_found", "unverified",
+        }
         if status in invalid:
             raise ValidationError(f"upload do currículo não confirmado: {status}")
         if status in {"uploaded", "selected"}:
             # O upload insere um novo radio: os índices do snapshot mudam.
             page.wait_for_timeout(1200)
-            return snapshot_form(page), status
-        return snapshot, status
+            return page, snapshot_form(page), status
+        return page, snapshot, status
 
     def _decide(self, snapshot: dict[str, Any]) -> list[FillDecision]:
         url = snapshot.get("url", "")
@@ -1890,6 +2052,36 @@ class BrowserApplyAgent:
                     )
                 )
                 continue
+            if field.field_type == "checkbox":
+                texto = " ".join(
+                    parte.strip()
+                    for parte in (field.label, field.nearby_text)
+                    if str(parte or "").strip()
+                )
+                if self._CONSENT_HINT_RE.search(texto):
+                    decisao = self._consent_decision(
+                        str(url or ""),
+                        texto,
+                        f"Campo de aceite no formulário. Pergunta renderizada: {texto[:1200]}",
+                    )
+                    if getattr(decisao, "allow", False):
+                        decisions.append(
+                            FillDecision(
+                                index=int(raw["index"]),
+                                signature=field.signature(),
+                                selector=str(raw.get("selector", "")),
+                                kind=str(raw.get("type", "text")),
+                                value="true",
+                                source=str(getattr(decisao, "source", "") or "llm"),
+                                required=field.required,
+                                category="consent",
+                            )
+                        )
+                        continue
+                    raise HumanActionRequired(
+                        "termos",
+                        str(getattr(decisao, "reason", "") or "aceite exige decisão humana"),
+                    )
             signature = field.signature()
             learned = self.patterns.suggest(url, signature)
             value = ""
@@ -1919,8 +2111,13 @@ class BrowserApplyAgent:
                 if not field.required and not sensivel:
                     log_event("browser_apply_optional_field_skipped", signature=signature)
                     continue
+                rotulo = str(field.label or signature).strip()
+                # Rótulos como "NoYes"/"Select..." não dizem ao operador o que
+                # o portal perguntou; o contexto renderizado é mais actionable.
+                if len(rotulo) < 24 and str(field.nearby_text or "").strip():
+                    rotulo = " ".join(str(field.nearby_text).split())[:160]
                 raise HumanActionRequired(
-                    "campo de formulário", f"{field.label or signature} não tem evidência no perfil"
+                    "campo de formulário", f"{rotulo} não tem evidência no perfil"
                 )
             decisions.append(
                 FillDecision(
@@ -1997,6 +2194,7 @@ class BrowserApplyAgent:
         existing = self.repo.get_approval_for_job(job.id)
         if existing is not None and existing.status == "APPROVED":
             raise ValidationError("aprovação já registrada; use o modo de envio")
+        self._consent_authorized = False
         page, snapshot, observation = self._open(job)
         try:
             self._record_easy_apply(job, observation)
@@ -2024,6 +2222,7 @@ class BrowserApplyAgent:
                 steps=steps,
             )
         finally:
+            self._consent_authorized = False
             self.browser.close_tab(page)
 
         answers = self._answers_from_steps(steps)
@@ -2095,7 +2294,12 @@ class BrowserApplyAgent:
         job.status = JobStatus.APPLYING
         self.repo.update_job(job)
 
-        page, snapshot, observation = self._open(job)
+        self._consent_authorized = True
+        try:
+            page, snapshot, observation = self._open(job)
+        except Exception:
+            self._consent_authorized = False
+            raise
         try:
             self._record_easy_apply(job, observation)
             snapshot = snapshot_form(page)
@@ -2167,6 +2371,7 @@ class BrowserApplyAgent:
             state = submission_state(page)
             if state == "blocked":
                 raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
+            self._ensure_no_credential_barrier(page)
             if state != "submitted":
                 if not click_submit(page):
                     log_event(
@@ -2191,6 +2396,29 @@ class BrowserApplyAgent:
                             "verificação/CAPTCHA durante a candidatura"
                         )
             if state != "submitted":
+                # Diagnóstico sem PII: só linhas com marcadores de envio e rótulos
+                # de botões. Assim sabemos o texto real da confirmação do portal
+                # sem registrar e-mail, telefone ou endereço no log.
+                try:
+                    corpo = str(page.locator("body").inner_text() or "")
+                except Exception:
+                    corpo = ""
+                marcadores = re.compile(
+                    r"application|submitted|sent|received|thank|success|complete|"
+                    r"candidatura|inscri[cç][aã]o|solicitud|postula|enviado|confirm",
+                    re.I,
+                )
+                trecho = " | ".join(
+                    linha.strip()
+                    for linha in corpo.splitlines()
+                    if marcadores.search(linha)
+                )[:700]
+                log_event(
+                    "browser_apply_submit_unconfirmed",
+                    url=str(getattr(page, "url", "") or ""),
+                    buttons=visible_buttons(page),
+                    markers=trecho,
+                )
                 job.status = JobStatus.FAILED
                 self.repo.update_job(job)
                 raise ValidationError("envio não confirmado pelo portal")
@@ -2264,4 +2492,5 @@ class BrowserApplyAgent:
                 self.memory.record_outcome(job, "FAILED", str(exc))
             raise
         finally:
+            self._consent_authorized = False
             self.browser.close_tab(page)

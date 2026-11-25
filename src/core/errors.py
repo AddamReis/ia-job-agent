@@ -46,6 +46,10 @@ class DuplicateApplication(AgentError):
     """Candidatura já registrada."""
 
 
+class JobUnavailable(AgentError):
+    """A vaga não aceita mais candidaturas no portal de origem."""
+
+
 class ValidationError(AgentError):
     """Validação pós-envio falhou."""
 
