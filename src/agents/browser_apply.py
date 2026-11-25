@@ -2400,6 +2400,16 @@ class BrowserApplyAgent:
                 for decision in selecionadas:
                     if fill_field(pagina, decision.index, decision.kind, decision.value):
                         preenchidos += 1
+                    else:
+                        # Nunca registra o valor: ele pode ser sensível. A assinatura
+                        # identifica o campo sem expor a resposta do operador.
+                        log_event(
+                            "browser_apply_field_fill_failed",
+                            signature=decision.signature,
+                            index=decision.index,
+                            kind=decision.kind,
+                            source=decision.source,
+                        )
                 self._ensure_not_blocked(pagina)
                 metadados = capture_screenshot(
                     pagina,
