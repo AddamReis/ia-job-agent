@@ -12,7 +12,7 @@ from src.core.errors import BlockedByPlatformError, HumanActionRequired
 from src.core.state import JobStatus
 from src.execution.forms.answers import AnswerResolver
 from src.execution.web.portal_credentials import PortalCredentialStore
-from src.models.domain import Application, CandidateProfile, JobOpportunity
+from src.models.domain import AnswerRule, Application, CandidateProfile, JobOpportunity
 from src.models.schemas import ConsentDecision
 
 PASSWORD_DOMAIN = "portal.example.com"
@@ -197,6 +197,28 @@ def _agent(
     agent.resolver = AnswerResolver(CandidateProfile(), FakeConsentRouter(), settings)
     agent.patterns = FakePatternStore()
     return agent
+
+
+def test_consent_with_explicit_human_evidence_is_allowed() -> None:
+    settings = Settings()
+    perfil = CandidateProfile(
+        answer_rules=[
+            AnswerRule(
+                match=r"terms of use|termos de uso",
+                value=True,
+                category="human_evidence",
+            )
+        ]
+    )
+    resolver = AnswerResolver(perfil, FakeConsentRouter(), settings)
+
+    decisao = resolver.interpret_consent(
+        "I accept the terms of use", "Aceite encontrado na landing"
+    )
+
+    assert decisao.allow is True
+    assert decisao.needs_human is False
+    assert decisao.source == "profile.human_evidence"
 
 
 def test_credentials_roundtrip_in_keyring(monkeypatch: pytest.MonkeyPatch) -> None:

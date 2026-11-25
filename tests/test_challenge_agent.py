@@ -42,9 +42,10 @@ class FakeMouse:
 class FakePage:
     url = "https://portal.example.com/apply"
 
-    def __init__(self, observations: list[dict]) -> None:
+    def __init__(self, observations: list[dict], frames: list[FakeFrame] | None = None) -> None:
         self.observations = list(observations)
         self.locators: dict[str, FakeLocator] = {}
+        self.frames = frames or []
         self.mouse = FakeMouse()
 
     def evaluate(self, _: str) -> dict:
@@ -69,6 +70,43 @@ class FakeCredentials:
 
     def get_secret(self, _domain: str, kind: str) -> str:
         return self.secrets.get(kind, "")
+
+
+class FakeElementHandle:
+    """Iframe com posição antes/depois de ser trazido para o viewport."""
+
+    def __init__(self, antes: dict, depois: dict) -> None:
+        self.antes = antes
+        self.depois = depois
+        self.pinned = False
+        self.scrolled = False
+
+    def bounding_box(self) -> dict:
+        return self.depois if self.pinned else self.antes
+
+    def scroll_into_view_if_needed(self) -> None:
+        self.scrolled = True
+
+    def evaluate(self, _js: str) -> bool:
+        self.pinned = True
+        return True
+
+    def get_attribute(self, _name: str) -> str:
+        return ""
+
+
+class FakeFrame:
+    def __init__(self, url: str, elemento: FakeElementHandle) -> None:
+        self.url = url
+        self.name = ""
+        self._elemento = elemento
+        self.locators: dict[str, FakeLocator] = {}
+
+    def frame_element(self) -> FakeElementHandle:
+        return self._elemento
+
+    def locator(self, seletor: str) -> FakeLocator:
+        return self.locators.setdefault(seletor, FakeLocator())
 
 
 class FakeLLM:
@@ -138,3 +176,50 @@ def test_senha_do_cofre_e_usada_quando_existe() -> None:
 
     assert agente.solve(pagina) is True
     assert pagina.locators['input[type="password"]'].filled == ["segredo-do-cofre"]
+
+
+def test_captcha_fora_do_viewport_e_trazido_com_overlay(tmp_path) -> None:
+    # Reproduz o iCIMS da Avalara: iframe a ~-9864px, fora de qualquer print.
+    elemento = FakeElementHandle(
+        {"x": 120, "y": -9864, "width": 480, "height": 620},
+        {"x": 400, "y": 50, "width": 480, "height": 620},
+    )
+    frame = FakeFrame("https://hcaptcha.com/1/challenge", elemento)
+    pagina = FakePage([_obs(captcha=True), _obs(captcha=True)] + [_obs()] * 6, [frame])
+    pagina.frames.insert(0, pagina)  # Playwright inclui o frame principal em page.frames
+    llm = FakeLLM(CaptchaSolution(kind="text", answer="AB12", confidence=0.9))
+    agente = ChallengeAgent(llm, FakeCredentials())
+
+    assert agente.solve(pagina, evidence_dir=tmp_path) is True
+    assert elemento.scrolled is True
+    assert elemento.pinned is True
+    assert pagina.locators['input[aria-label*="captcha" i]'].filled == ["AB12"]
+    assert (tmp_path / "challenge_01.jpg").exists()
+
+
+def test_captcha_ja_visivel_nao_e_reposicionado() -> None:
+    caixa = {"x": 400, "y": 50, "width": 480, "height": 620}
+    elemento = FakeElementHandle(caixa, caixa)
+    frame = FakeFrame("https://hcaptcha.com/1/challenge", elemento)
+    pagina = FakePage([_obs(captcha=True), _obs(captcha=True)] + [_obs()] * 6, [frame])
+    pagina.frames.insert(0, pagina)
+    agente = ChallengeAgent(
+        FakeLLM(CaptchaSolution(kind="text", answer="OK", confidence=0.9)),
+        FakeCredentials(),
+    )
+
+    assert agente.solve(pagina) is True
+    assert elemento.pinned is False
+
+
+def test_captcha_de_texto_dentro_de_frame_e_preenchido() -> None:
+    frame = FakeFrame(
+        "https://hcaptcha.com/1/challenge",
+        FakeElementHandle({"x": 0, "y": 0, "width": 300, "height": 80}, {}),
+    )
+    seletor = 'input[aria-label*="captcha" i]'
+    frame.locators[seletor] = FakeLocator()
+    pagina = FakePage([], [frame])
+
+    assert ChallengeAgent._fill_captcha_text(pagina, "DENTRO") is True
+    assert frame.locators[seletor].filled == ["DENTRO"]

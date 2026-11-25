@@ -117,6 +117,24 @@ def _birth_part(profile: CandidateProfile, parte: str) -> str:
     return ""
 
 
+def human_evidence(profile: CandidateProfile, text: str) -> str:
+    """Resposta cadastrada explicitamente pelo operador para tema sensível.
+
+    Diferente de uma autorização genérica, cada regra traz o texto que o portal
+    pergunta e o valor decidido pelo humano. Nunca é inferida pelo LLM.
+    """
+    contexto = " ".join(str(text or "").split()).lower()
+    for regra in getattr(profile, "answer_rules", []) or []:
+        if str(getattr(regra, "category", "")) != "human_evidence":
+            continue
+        try:
+            if re.search(str(regra.match), contexto, re.I):
+                return str(regra.value)
+        except re.error:
+            continue
+    return ""
+
+
 def _sensitive_evidence(
     field: FormField, profile: CandidateProfile
 ) -> tuple[str, str] | None:
@@ -174,6 +192,9 @@ def resolve_local(
     rotulo_renderizado = " ".join(str(field.nearby_text or "").split()).lower()
     pergunta = re.split(r"[?]", rotulo_renderizado, maxsplit=1)[0]
     contexto = f"{signature} {rotulo_renderizado}".lower()
+    evidencia_humana = human_evidence(profile, contexto)
+    if evidencia_humana:
+        return (evidencia_humana, "profile.human_evidence", False, "general")
     if (
         _SENSITIVE.search(signature)
         or _SENSITIVE.search(pergunta)

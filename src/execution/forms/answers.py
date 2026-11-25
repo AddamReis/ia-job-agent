@@ -10,7 +10,7 @@ from ...llm.prompts import answer_messages, consent_messages, ui_action_messages
 from ...models.domain import CandidateProfile
 from ...models.schemas import AnswerDecision, ConsentDecision, UiActionDecision
 from .field import FormField
-from .mapper import resolve_local
+from .mapper import human_evidence, resolve_local
 from ..profile.builder import profile_context
 
 
@@ -111,8 +111,24 @@ class AnswerResolver:
 
         A barreira sensível permanece fora do modelo: mesmo que ele responda
         ``allow=true``, texto de senha/CAPTCHA/termos legais/visto etc. exige
-        ação humana.
+        evidência humana explícita no perfil.
         """
+        evidencia = human_evidence(self.profile, checkbox_text)
+        if evidencia:
+            if str(evidencia).strip().lower() in {
+                "true", "sim", "yes", "1", "checked", "aceito", "autorizo"
+            }:
+                return ConsentDecision(
+                    allow=True,
+                    needs_human=False,
+                    source="profile.human_evidence",
+                    reason="aceite decidido explicitamente pelo operador",
+                )
+            return ConsentDecision(
+                allow=False,
+                needs_human=True,
+                reason="evidência humana explícita não autorizou o aceite",
+            )
         try:
             decision = self.llm.structured(
                 consent_messages(

@@ -206,6 +206,38 @@ def build_profile(settings: Settings) -> CandidateProfile:
             AnswerRule(match=match, value=value, category=category)
         )
 
+    # Evidência explícita do operador para temas legal/sensíveis. Fica em
+    # data/human_evidence.json (fora do git) e NÃO passa pelo filtro acima:
+    # cada regra foi cadastrada para o texto real da pergunta no portal.
+    humanas = 0
+    arquivo_humano = settings.resolve(settings.profile.human_evidence_file)
+    try:
+        brutas = (
+            json.loads(arquivo_humano.read_text(encoding="utf-8"))
+            if arquivo_humano.exists()
+            else []
+        )
+    except (OSError, ValueError) as exc:
+        log_event("human_evidence_file_error", error=type(exc).__name__)
+        brutas = []
+    for rule in brutas if isinstance(brutas, list) else []:
+        if not isinstance(rule, dict):
+            continue
+        match = str(rule.get("match", "")).strip()
+        if not match:
+            continue
+        rules.append(
+            AnswerRule(
+                match=match,
+                value=rule.get("value", ""),
+                category="human_evidence",
+                requires_human=False,
+            )
+        )
+        humanas += 1
+    if humanas:
+        log_event("human_evidence_rules_loaded", total=humanas)
+
     cv_path = settings.resolve(settings.profile.cv_path)
     cv_text = extract_cv_text(cv_path) if cv_path.exists() else ""
     lowered = cv_text.lower()

@@ -65,6 +65,55 @@ def test_legal_terms_never_auto_accepted():
     assert category == "sensitive"
 
 
+def test_human_evidence_resolves_work_authorization():
+    settings = Settings.load()
+    profile = CandidateProfile(
+        answer_rules=[
+            AnswerRule(
+                match=r"right to work|autoriza[cç][aã]o de trabalho",
+                value="Cidadania brasileira",
+                category="human_evidence",
+            )
+        ]
+    )
+    valor, origem, precisa_humano, categoria = resolve_local(
+        FormField(
+            label="Please confirm the basis of your right to work in the country",
+            field_type="text",
+        ),
+        profile,
+        settings,
+    )
+    assert valor == "Cidadania brasileira"
+    assert origem == "profile.human_evidence"
+    assert not precisa_humano
+    assert categoria == "general"
+
+
+def test_human_evidence_resolves_referral_question():
+    settings = Settings.load()
+    profile = CandidateProfile(
+        answer_rules=[
+            AnswerRule(
+                match=r"related to anyone who works at capco",
+                value="No",
+                category="human_evidence",
+            )
+        ]
+    )
+    valor, origem, precisa_humano, _ = resolve_local(
+        FormField(
+            label="Do you know anyone or are you related to anyone who works at Capco?",
+            field_type="radio",
+        ),
+        profile,
+        settings,
+    )
+    assert valor == "No"
+    assert origem == "profile.human_evidence"
+    assert not precisa_humano
+
+
 def test_recruitcrm_placeholder_labels_use_rendered_context():
     settings = Settings.load()
     profile = CandidateProfile(
