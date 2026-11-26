@@ -2398,7 +2398,29 @@ class BrowserApplyAgent:
                 ]
                 step.decisions = selecionadas
                 for decision in selecionadas:
-                    if fill_field(pagina, decision.index, decision.kind, decision.value):
+                    # O React Select re-renderiza e troca os índices depois de
+                    # cada escolha. Reatribuir o rótulo e casar pela assinatura
+                    # evita escrever no campo errado (ou em índice que sumiu).
+                    indice = decision.index
+                    try:
+                        atual = snapshot_form(pagina)
+                        for bruto in atual.get("fields", []):
+                            campo = FormField(
+                                label=bruto.get("label", ""),
+                                field_type=bruto.get("type", "text"),
+                                required=bool(bruto.get("required")),
+                                options=list(bruto.get("options", [])),
+                                autocomplete=bruto.get("autocomplete", ""),
+                                identifier=bruto.get("identifier", ""),
+                                placeholder=bruto.get("placeholder", ""),
+                                nearby_text=bruto.get("nearby_text", ""),
+                            )
+                            if campo.signature() == decision.signature:
+                                indice = int(bruto["index"])
+                                break
+                    except Exception:
+                        pass
+                    if fill_field(pagina, indice, decision.kind, decision.value):
                         preenchidos += 1
                     else:
                         # Nunca registra o valor: ele pode ser sensível. A assinatura

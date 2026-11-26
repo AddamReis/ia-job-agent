@@ -61,6 +61,8 @@ _SNAPSHOT_JS = r"""
     return el.getAttribute('aria-hidden') === 'true'
       || el.getAttribute('tabindex') === '-1'
       || el.classList.contains('requiredInput')
+      || el.classList.contains('iti__search-input')
+      || /__search-input$/.test(el.id || '')
       || /^hp[_-]/i.test(name)
       || Boolean(el.closest('[aria-hidden="true"]'));
   };
@@ -735,12 +737,40 @@ def ensure_resume_uploaded(page: Any, path: str | Path) -> str:
     return "unverified"
 
 
+def _combobox_state(target: Any) -> dict[str, str]:
+    """Estado do controle sem usar o value do input.
+
+    No React Select do Greenhouse o ``input`` fica vazio depois da escolha: o
+    valor visível mora em ``.select__single-value`` (no Country, só ``+55``).
+    """
+    info = target.evaluate(
+        """(el) => {
+          const caixa = el.closest('.select__control')
+            || (el.parentElement && el.parentElement.parentElement
+                && el.parentElement.parentElement.parentElement)
+            || el;
+          const visivel = caixa.querySelector('.select__single-value');
+          return {
+            value: String(el.value || ''),
+            display: visivel ? (visivel.innerText || '').trim() : '',
+            controls: el.getAttribute('aria-controls') || '',
+            id: el.id || '',
+            expanded: el.getAttribute('aria-expanded') || '',
+          };
+        }""",
+        timeout=3000,
+    )
+    return info if isinstance(info, dict) else {}
+
+
 def _choose_combobox(page: Any, target: Any, value: str) -> bool:
-    """Seleciona opção em combobox MUI/Radix (``role=combobox``).
+    """Seleciona opção em combobox MUI/Radix/React Select (``role=combobox``).
 
     A correspondência é exata ou por prefixo. Prefixo é necessário em portais
-    que devolvem ``Cidade, UF, País``; ainda assim ``Male`` nunca casa com
-    ``Female`` porque o prefixo exige vírgula ou espaço logo após o valor.
+    que devolvem ``Cidade, UF, País`` ou ``Brazil +55``; ainda assim ``Male``
+    nunca casa com ``Female`` porque o prefixo exige vírgula ou espaço.
+    Cada combobox usa SOMENTE a listbox que ele controla: a página do
+    Greenhouse mantém várias listboxes no DOM, inclusive a do telefone.
     """
     escolhido = str(value or "").strip()
     if not escolhido:
@@ -760,32 +790,65 @@ def _choose_combobox(page: Any, target: Any, value: str) -> bool:
             return 1 + len(normalizado)
         return None
 
-    def _abrir() -> None:
-        page.keyboard.press("Escape")
+    def _lista() -> Any:
         try:
-            target.click(timeout=5000)
+            info = _combobox_state(target)
         except Exception:
-            target.evaluate("(el) => el.click()")
-        page.wait_for_timeout(250)
-        lista = page.locator('[role="listbox"]')
-        if lista.count() == 0 or not lista.first.is_visible():
+            info = {}
+        seletores: list[str] = []
+        if info.get("controls"):
+            seletores.append(f'[id="{info["controls"]}"]')
+        if info.get("id"):
+            seletores.append(f'[id="react-select-{info["id"]}-listbox"]')
+        for seletor in seletores:
+            candidata = page.locator(seletor)
             try:
-                target.click(timeout=5000)
+                if candidata.count() and candidata.first.locator('[role="option"]').count():
+                    return candidata.first
             except Exception:
-                target.evaluate("(el) => el.click()")
+                continue
+        visiveis = page.locator('[role="listbox"]:visible')
+        try:
+            for indice in range(visiveis.count()):
+                if visiveis.nth(indice).locator('[role="option"]').count():
+                    return visiveis.nth(indice)
+        except Exception:
+            pass
+        return page.locator('[role="listbox"]').first
+
+    def _abrir() -> bool:
+        try:
+            page.keyboard.press("Escape")
+            try:
+                target.click(timeout=3000)
+            except Exception:
+                target.evaluate("(el) => el.click()", timeout=3000)
             page.wait_for_timeout(250)
+            lista = _lista()
+            if not lista.locator('[role="option"]').count():
+                try:
+                    target.click(timeout=3000)
+                except Exception:
+                    target.evaluate("(el) => el.click()", timeout=3000)
+                page.wait_for_timeout(250)
+            return True
+        except Exception:
+            return False
 
     def _escolher() -> bool:
-        opcoes = page.locator('[role="listbox"] [role="option"]')
+        opcoes = _lista().locator('[role="option"]')
         # Listas Radix carregam as opções de forma assíncrona após a digitação.
         for _tentativa in range(20):
-            if opcoes.count() > 0:
-                break
+            try:
+                if opcoes.count() > 0:
+                    break
+            except Exception:
+                return False
             page.wait_for_timeout(150)
         candidatos: list[tuple[int, int, Any]] = []
         for indice in range(opcoes.count()):
             try:
-                texto = opcoes.nth(indice).inner_text().strip()
+                texto = opcoes.nth(indice).inner_text(timeout=2000).strip()
             except Exception:
                 continue
             rank = _ranking(texto)
@@ -794,30 +857,59 @@ def _choose_combobox(page: Any, target: Any, value: str) -> bool:
         if not candidatos:
             return False
         candidatos.sort(key=lambda item: (item[0], item[1]))
-        candidatos[0][2].click(timeout=5000)
+        opcao = candidatos[0][2]
+        try:
+            opcao.click(timeout=3000)
+        except Exception:
+            return False
         page.wait_for_timeout(200)
         try:
-            atual = target.input_value() if target.evaluate("(el) => el.tagName === 'INPUT'") else target.inner_text()
+            atual = _combobox_state(target)
         except Exception:
-            atual = ""
-        return _ranking(atual) is not None
+            atual = {}
+        if _ranking(atual.get("value", "")) is not None:
+            return True
+        if atual.get("display", "").strip():
+            return True
+        # O React Select pode esconder o rótulo; a própria opção guarda o
+        # estado de seleção antes de a listbox fechar.
+        try:
+            if opcao.get_attribute("aria-selected", timeout=2000) == "true":
+                return True
+        except Exception:
+            pass
+        return False
 
-    _abrir()
+    if not _abrir():
+        return False
     if _escolher():
         return True
     # Combobox que filtra opções ao digitar: limpar antes para não duplicar.
-    _abrir()
+    if not _abrir():
+        return False
     try:
-        target.fill("")
+        target.fill("", timeout=3000)
     except Exception:
-        page.keyboard.press("Control+A")
-        page.keyboard.press("Backspace")
-    page.keyboard.type(escolhido)
+        try:
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+        except Exception:
+            return False
+    try:
+        page.keyboard.type(escolhido)
+    except Exception:
+        return False
     if _escolher():
         return True
-    page.keyboard.press("Enter")
-    page.wait_for_timeout(200)
-    return False
+    try:
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+    try:
+        return _ranking(_combobox_state(target).get("value", "")) is not None
+    except Exception:
+        return False
 
 
 def fill_field(page: Any, index: int, kind: str, value: str) -> bool:

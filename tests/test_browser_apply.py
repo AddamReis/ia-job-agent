@@ -20,6 +20,7 @@ from src.execution.forms.field import FormField
 from src.execution.forms.mapper import resolve_local
 from src.execution.web.form_dom import (
     _SNAPSHOT_JS,
+    _choose_combobox,
     credential_barrier,
     ensure_resume_uploaded,
     fill_field,
@@ -1313,10 +1314,97 @@ def test_snapshot_js_discards_decorative_and_honeypot_controls() -> None:
     assert 'aria-hidden' in _SNAPSHOT_JS
     assert 'tabindex' in _SNAPSHOT_JS
     assert 'requiredInput' in _SNAPSHOT_JS
+    assert 'iti__search-input' in _SNAPSHOT_JS
     assert 'hp[_-]' in _SNAPSHOT_JS
     assert '!playerControl(el) && !decorative(el)' in _SNAPSHOT_JS
     assert 'const marcados = arredores' in _SNAPSHOT_JS
     assert '(t.match(/[*?]/g)' in _SNAPSHOT_JS
+
+
+def test_choose_combobox_uses_its_own_listbox_and_visible_selection() -> None:
+    """React Select do Greenhouse mantém várias listboxes e input vazio."""
+
+    class Option:
+        def __init__(self, texto: str, *, escolhida: bool = False) -> None:
+            self.texto = texto
+            self.escolhida = escolhida
+
+        def inner_text(self, timeout: int | None = None) -> str:
+            return self.texto
+
+        def click(self, timeout: int | None = None) -> None:
+            self.escolhida = True
+            state["display"] = "+55"
+
+        def get_attribute(self, nome: str, timeout: int | None = None) -> str | None:
+            assert nome == "aria-selected"
+            return "true" if self.escolhida else "false"
+
+    class Lista:
+        def __init__(self, opcoes: list[Option]) -> None:
+            self.opcoes = opcoes
+
+        def locator(self, selector: str):
+            assert selector == '[role="option"]'
+            return self
+
+        def count(self) -> int:
+            return len(self.opcoes)
+
+        def nth(self, indice: int) -> Option:
+            return self.opcoes[indice]
+
+    state = {"display": ""}
+    phone = Lista([Option("Brazil +55")])
+    country = Lista([Option("Argentina +54"), Option("Brazil +55")])
+
+    class Target:
+        def evaluate(self, expression: str, timeout: int | None = None) -> dict[str, str]:
+            assert "select__single-value" in expression
+            return {
+                "value": "",
+                "display": state["display"],
+                "controls": "react-select-country-listbox",
+                "id": "country",
+                "expanded": "true",
+            }
+
+        def click(self, timeout: int | None = None) -> None:
+            return None
+
+        def fill(self, valor: str, timeout: int | None = None) -> None:
+            return None
+
+    class Page:
+        def __init__(self) -> None:
+            self.seletores: list[str] = []
+
+        @property
+        def keyboard(self):
+            return self
+
+        def press(self, _tecla: str) -> None:
+            return None
+
+        def type(self, _texto: str) -> None:
+            raise AssertionError("não deve digitar quando a opção é encontrada")
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+        def locator(self, seletor: str):
+            self.seletores.append(seletor)
+            if "react-select-country-listbox" in seletor:
+                return type("Unica", (), {"count": lambda self: 1, "first": property(lambda self: country)})()
+            if "iti-0__country-listbox" in seletor:
+                return type("Unica", (), {"count": lambda self: 1, "first": property(lambda self: phone)})()
+            return type("Vazia", (), {"count": lambda self: 0, "first": property(lambda self: phone)})()
+
+    pagina = Page()
+    assert _choose_combobox(pagina, Target(), "Brazil") is True
+    assert any("react-select-country-listbox" in s for s in pagina.seletores)
+    assert country.opcoes[1].escolhida is True
+    assert phone.opcoes[0].escolhida is False
 
 
 def test_closed_linkedin_job_is_expired_without_agent_error(
