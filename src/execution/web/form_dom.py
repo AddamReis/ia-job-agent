@@ -1036,6 +1036,38 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
     return True
 
 
+_READINESS_JS = r"""
+() => [...document.querySelectorAll('input, select, textarea, [role="combobox"]')]
+  .filter(el => el.required || el.getAttribute('aria-required') === 'true')
+  .map(el => {
+    const caixa = el.closest('.select__control')
+      || (el.parentElement && el.parentElement.parentElement
+          && el.parentElement.parentElement.parentElement)
+      || el;
+    const visivel = caixa.querySelector('.select__single-value');
+    const erro = document.getElementById(el.getAttribute('aria-errormessage') || '');
+    return {
+      id: el.id || el.getAttribute('aria-label') || el.getAttribute('name') || '',
+      filled: Boolean(
+        String(el.value || '').trim()
+        || (visivel && (visivel.innerText || '').trim())
+        || el.checked
+        || (el.files && el.files.length)
+      ),
+      error: erro ? (erro.innerText || '').trim().slice(0, 120) : '',
+    };
+  })
+"""
+
+
+def required_field_state(page: Any) -> list[dict[str, Any]]:
+    """Estado booleano dos campos obrigatórios, sem expor valores preenchidos."""
+    try:
+        return page.evaluate(_READINESS_JS) or []
+    except Exception:
+        return []
+
+
 def click_submit(page: Any, label: str = "") -> bool:
     labels = [label] if label else list(_SUBMIT_LABELS)
     for text in labels:

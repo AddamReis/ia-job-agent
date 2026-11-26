@@ -26,6 +26,7 @@ from src.execution.web.form_dom import (
     fill_field,
     peek_combobox_options,
     platform_block,
+    required_field_state,
     resume_attached_on_page,
     submission_state,
 )
@@ -1488,6 +1489,20 @@ def test_choose_combobox_uses_its_own_listbox_and_visible_selection() -> None:
     assert any("react-select-country-listbox" in s for s in pagina.seletores)
     assert country.opcoes[1].escolhida is True
     assert phone.opcoes[0].escolhida is False
+
+
+def test_required_field_state_reports_boolean_without_value() -> None:
+    class Page:
+        def evaluate(self, _expression: str):
+            return [
+                {"id": "first_name", "filled": True, "error": ""},
+                {"id": "country", "filled": False, "error": "Select a country"},
+            ]
+
+    assert required_field_state(Page()) == [
+        {"id": "first_name", "filled": True, "error": ""},
+        {"id": "country", "filled": False, "error": "Select a country"},
+    ]
 
 
 def test_fill_field_retries_transient_combobox_failure(

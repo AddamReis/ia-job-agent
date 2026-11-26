@@ -44,6 +44,7 @@ from ..execution.web.form_dom import (
     peek_combobox_options,
     platform_block,
     remove_extra_experience_entry,
+    required_field_state,
     resume_attached_on_page,
     snapshot_form,
     submission_state,
@@ -2476,6 +2477,10 @@ class BrowserApplyAgent:
                 raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
             self._ensure_no_credential_barrier(page)
             if state != "submitted":
+                log_event(
+                    "browser_apply_submit_readiness",
+                    fields=required_field_state(page),
+                )
                 if not click_submit(page):
                     log_event(
                         "browser_apply_submit_not_found",
