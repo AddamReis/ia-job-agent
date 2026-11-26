@@ -780,6 +780,46 @@ def _combobox_state(target: Any) -> dict[str, str]:
     return info if isinstance(info, dict) else {}
 
 
+def peek_combobox_options(page: Any, index: int) -> list[str]:
+    """Abre brevemente um React Select e lê as opções da listbox associada.
+
+    A listbox só entra no DOM quando o combobox é aberto. Sem esta leitura o
+    resolvedor vê ``options=[]`` e não consegue usar a opção de não responder.
+    """
+    try:
+        alvo = page.locator(f'[data-agent-field="{index}"]').first
+        alvo.click(timeout=2000, force=True)
+        page.wait_for_timeout(150)
+        info = _combobox_state(alvo)
+        seletores: list[str] = []
+        if info.get("controls"):
+            seletores.append(f'[id="{info["controls"]}"]')
+        if info.get("id"):
+            seletores.append(f'[id="react-select-{info["id"]}-listbox"]')
+        for seletor in seletores:
+            lista = page.locator(seletor)
+            if not (lista.count() and lista.first.locator('[role="option"]').count()):
+                continue
+            opcoes = lista.first.locator('[role="option"]')
+            texto: list[str] = []
+            for posicao in range(min(opcoes.count(), 60)):
+                try:
+                    item = opcoes.nth(posicao).inner_text(timeout=1000).strip()
+                except Exception:
+                    continue
+                if item:
+                    texto.append(item)
+            return texto
+    except Exception:
+        pass
+    finally:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+    return []
+
+
 def _choose_combobox(page: Any, target: Any, value: str) -> bool:
     """Seleciona opção em combobox MUI/Radix/React Select (``role=combobox``).
 

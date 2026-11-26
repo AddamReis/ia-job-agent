@@ -41,6 +41,7 @@ from ..execution.web.form_dom import (
     fill_field,
     is_experience_step,
     next_step_label,
+    peek_combobox_options,
     platform_block,
     remove_extra_experience_entry,
     resume_attached_on_page,
@@ -411,7 +412,7 @@ class BrowserApplyAgent:
                     removed_extras=removals,
                 )
             else:
-                decisions = self._decide(snapshot)
+                decisions = self._decide(snapshot, page)
             rotulo = next_step_label(page)
             url = str(snapshot.get("url", "") or "")
             step = PreparedStep(
@@ -2067,15 +2068,24 @@ class BrowserApplyAgent:
             return page, snapshot_form(page), status
         return page, snapshot, status
 
-    def _decide(self, snapshot: dict[str, Any]) -> list[FillDecision]:
+    def _decide(
+        self, snapshot: dict[str, Any], page: Any | None = None
+    ) -> list[FillDecision]:
         url = snapshot.get("url", "")
         decisions: list[FillDecision] = []
         for raw in snapshot.get("fields", []):
+            opcoes = list(raw.get("options", []))
+            if page is not None and raw.get("type") == "combobox" and not opcoes:
+                # React Select cria a listbox só ao abrir. Buscar as opções aqui
+                # permite usar a opção do portal para não responder em campos
+                # demográficos sem inventar dado do perfil.
+                opcoes = peek_combobox_options(page, int(raw["index"]))
+                raw["options"] = opcoes
             field = FormField(
                 label=raw.get("label", ""),
                 field_type=raw.get("type", "text"),
                 required=bool(raw.get("required")),
-                options=list(raw.get("options", [])),
+                options=opcoes,
                 autocomplete=raw.get("autocomplete", ""),
                 identifier=raw.get("identifier", ""),
                 placeholder=raw.get("placeholder", ""),

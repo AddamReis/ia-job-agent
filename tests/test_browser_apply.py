@@ -24,6 +24,7 @@ from src.execution.web.form_dom import (
     credential_barrier,
     ensure_resume_uploaded,
     fill_field,
+    peek_combobox_options,
     platform_block,
     resume_attached_on_page,
     submission_state,
@@ -1341,6 +1342,66 @@ def test_snapshot_js_discards_decorative_and_honeypot_controls() -> None:
     assert '!playerControl(el) && !decorative(el)' in _SNAPSHOT_JS
     assert 'const marcados = arredores' in _SNAPSHOT_JS
     assert '(t.match(/[*?]/g)' in _SNAPSHOT_JS
+
+
+def test_peek_combobox_options_reads_associated_listbox() -> None:
+    opcoes = ["White or European", "I don't wish to self-identify"]
+
+    class Lista:
+        def locator(self, _selector):
+            return self
+
+        def count(self) -> int:
+            return len(opcoes)
+
+        def nth(self, indice: int):
+            return type(
+                "Opcao", (), {"inner_text": lambda self, timeout=None: opcoes[indice]}
+            )()
+
+    class Alvo:
+        def click(self, **_kwargs) -> None:
+            return None
+
+        def evaluate(self, _expression: str, timeout: int | None = None):
+            return {
+                "value": "",
+                "display": "",
+                "controls": "",
+                "id": "31772",
+                "expanded": "true",
+            }
+
+    class Page:
+        def __init__(self) -> None:
+            self.presses: list[str] = []
+
+        @property
+        def keyboard(self):
+            return self
+
+        def press(self, tecla: str) -> None:
+            self.presses.append(tecla)
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+        def locator(self, seletor: str):
+            if "data-agent-field" in seletor:
+                return type("Unico", (), {"first": property(lambda self: Alvo())})()
+            assert "react-select-31772-listbox" in seletor
+            return type(
+                "Caixa",
+                (),
+                {
+                    "count": lambda self: 1,
+                    "first": property(lambda self: Lista()),
+                },
+            )()
+
+    pagina = Page()
+    assert peek_combobox_options(pagina, 11) == opcoes
+    assert "Escape" in pagina.presses
 
 
 def test_choose_combobox_uses_its_own_listbox_and_visible_selection() -> None:
