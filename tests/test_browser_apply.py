@@ -1,6 +1,7 @@
 """Agente de candidatura no Chrome logado: URL real, aprendizado local e gate."""
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -382,6 +383,41 @@ def test_ensure_resume_uploaded_recognizes_filename_in_page_text(tmp_path) -> No
 
         def locator(self, *args, **kwargs):
             raise AssertionError("não deve reenviar um CV já confirmado na tela")
+
+    assert ensure_resume_uploaded(Page(), cv) == "already_attached"
+
+
+def test_upload_em_andamento_nao_usa_texto_alheio_ao_arquivo(tmp_path) -> None:
+    cv = tmp_path / "cv-alignerr.pdf"
+    cv.write_bytes(b"%PDF-1.4")
+
+    class Page:
+        texto = (
+            "Resume/CV*\n"
+            "cv-alignerr.pdf\n"
+            "By checking this box, I consent to processing my responses.\n"
+        )
+
+        def evaluate(self, expression, name=None):
+            if "checked &&" in expression:
+                return False
+            if "input, a, [aria-label], [title]" in expression:
+                return True
+            if "uploading|upload in progress" in expression:
+                alvo = (name or "").lower()
+                return any(
+                    alvo in linha.lower()
+                    and re.search(
+                        r"uploading|upload in progress|enviando|carregando|processing",
+                        linha,
+                        re.I,
+                    )
+                    for linha in self.texto.splitlines()
+                )
+            raise AssertionError("expressão de upload inesperada")
+
+        def locator(self, *args, **kwargs):
+            raise AssertionError("CV já anexado não deve ser reenviado")
 
     assert ensure_resume_uploaded(Page(), cv) == "already_attached"
 

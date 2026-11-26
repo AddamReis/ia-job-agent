@@ -296,10 +296,22 @@ _RESUME_ATTACHED_JS = r"""
 _RESUME_UPLOADING_JS = r"""
 (name) => {
   const alvo = String(name || '').toLowerCase();
-  const texto = (document.body.innerText || '').toLowerCase();
-  if (!alvo || !texto.includes(alvo)) return false;
+  if (!alvo) return false;
+  // "processing" aparece em textos de privacidade/demografia sem ter relação
+  // com o arquivo. Só avalia linhas/atributos que citam o nome do CV.
+  const linhas = (document.body.innerText || '')
+    .split(/\r?\n|\u2028|\u2029/)
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.includes(alvo));
+  const atributos = [...document.querySelectorAll('[aria-label],[title],[alt]')]
+    .map(el => ((el.getAttribute('aria-label') || '') + ' ' +
+                (el.getAttribute('title') || '') + ' ' +
+                (el.getAttribute('alt') || '')).trim().toLowerCase())
+    .filter(s => s.includes(alvo));
+  const contextos = linhas.concat(atributos);
+  if (!contextos.length) return false;
   return /uploading|upload in progress|enviando|carregando|processando|processing|cargando/i
-    .test(texto);
+    .test(contextos.join(' '));
 }
 """
 
