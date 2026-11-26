@@ -1046,14 +1046,17 @@ _READINESS_JS = r"""
       || el;
     const visivel = caixa.querySelector('.select__single-value');
     const erro = document.getElementById(el.getAttribute('aria-errormessage') || '');
+    const tipo = (el.type || '').toLowerCase();
+    const preenchido = tipo === 'checkbox' || tipo === 'radio'
+      ? Boolean(el.checked)
+      : Boolean(
+          String(el.value || '').trim()
+          || (visivel && (visivel.innerText || '').trim())
+          || (el.files && el.files.length)
+        );
     return {
       id: el.id || el.getAttribute('aria-label') || el.getAttribute('name') || '',
-      filled: Boolean(
-        String(el.value || '').trim()
-        || (visivel && (visivel.innerText || '').trim())
-        || el.checked
-        || (el.files && el.files.length)
-      ),
+      filled: preenchido,
       error: erro ? (erro.innerText || '').trim().slice(0, 120) : '',
     };
   })

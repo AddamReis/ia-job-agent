@@ -2529,6 +2529,7 @@ class BrowserApplyAgent:
                     url=str(getattr(page, "url", "") or ""),
                     buttons=visible_buttons(page),
                     markers=trecho,
+                    invalid=required_field_state(page),
                 )
                 job.status = JobStatus.FAILED
                 self.repo.update_job(job)
