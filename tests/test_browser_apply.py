@@ -1490,6 +1490,35 @@ def test_choose_combobox_uses_its_own_listbox_and_visible_selection() -> None:
     assert phone.opcoes[0].escolhida is False
 
 
+def test_fill_field_retries_transient_combobox_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tentativas: list[str] = []
+
+    def escolhe(_page, _target, value):
+        tentativas.append(value)
+        return len(tentativas) == 2
+
+    monkeypatch.setattr("src.execution.web.form_dom._choose_combobox", escolhe)
+
+    class Pagina:
+        def locator(self, _seletor):
+            return type(
+                "Unica",
+                (),
+                {
+                    "count": lambda self: 1,
+                    "first": property(lambda self: object()),
+                },
+            )()
+
+        def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+    assert fill_field(Pagina(), 5, "combobox", "São Paulo") is True
+    assert tentativas == ["São Paulo", "São Paulo"]
+
+
 def test_closed_linkedin_job_is_expired_without_agent_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

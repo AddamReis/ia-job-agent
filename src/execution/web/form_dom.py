@@ -1015,7 +1015,22 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
         except Exception:
             target.select_option(value)
     elif kind == "combobox":
-        return _choose_combobox(page, target, value)
+        # O React Select pode re-renderizar no meio da escolha e deixar a
+        # listbox vazia por um instante. Tentar de novo com o locator atual
+        # evita marcar campo obrigatório como preenchido quando não foi.
+        for tentativa in range(3):
+            if _choose_combobox(page, target, value):
+                return True
+            if tentativa == 2:
+                break
+            try:
+                page.wait_for_timeout(250)
+                atualizado = page.locator(f'[data-agent-field="{index}"]')
+                if atualizado.count():
+                    target = atualizado.first
+            except Exception:
+                return False
+        return False
     else:
         target.fill(value)
     return True
