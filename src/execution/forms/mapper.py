@@ -67,8 +67,11 @@ _DEMOGRAPHIC_FIELD = re.compile(
     re.IGNORECASE,
 )
 _OPT_OUT_OPTION = re.compile(
-    r"don't wish to answer|do not wish to answer|prefer not to (?:say|answer)|"
-    r"prefiro n[aã]o responder|n[aã]o desejo responder|"
+    r"don't wish to (?:answer|self.identify)|"
+    r"do not wish to (?:answer|self.identify)|"
+    r"prefer not to (?:say|answer|self.identify)|"
+    r"prefiro n[aã]o responder|prefiro n[aã]o se identificar|"
+    r"n[aã]o desejo responder|"
     r"choose not to self.identify|escolho n[aã]o se identificar",
     re.IGNORECASE,
 )
@@ -203,6 +206,7 @@ def resolve_local(
         or _BIRTH_MONTH_FIELD.search(pergunta)
         or _BIRTH_DAY_FIELD.search(pergunta)
         or _BIRTH_YEAR_FIELD.search(pergunta)
+        or _DEMOGRAPHIC_FIELD.search(signature)
         or _DEMOGRAPHIC_FIELD.search(pergunta)
     ):
         evidencia = _sensitive_evidence(field, profile)

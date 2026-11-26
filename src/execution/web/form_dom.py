@@ -128,7 +128,24 @@ _SNAPSHOT_JS = r"""
       || arredores[0] || '';
     const options = el.tagName === 'SELECT'
       ? [...el.options].map(o => (o.text || '').trim()).filter(Boolean)
-      : [];
+      : (() => {
+          // React Select mantém a listbox associada no DOM mesmo fechada.
+          // Sem isso o resolvedor não vê opções como "I don't wish to
+          // self-identify" e bloqueia o envio sem necessidade.
+          const ids = [];
+          const controls = el.getAttribute('aria-controls');
+          if (controls) ids.push(controls);
+          if (el.id) ids.push('react-select-' + el.id + '-listbox');
+          for (const listId of ids) {
+            const caixa = document.getElementById(listId);
+            if (caixa) {
+              return [...caixa.querySelectorAll('[role="option"]')]
+                .map(o => (o.innerText || '').replace(/\\s+/g, ' ').trim())
+                .filter(Boolean);
+            }
+          }
+          return [];
+        })();
     el.setAttribute('data-agent-field', String(index));
     fields.push({
       index: index,

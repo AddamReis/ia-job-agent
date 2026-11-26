@@ -1219,6 +1219,26 @@ def test_demographic_opt_out_uses_portal_option_without_profile_data() -> None:
     assert precisa_humano is False
 
 
+def test_racial_background_uses_portal_self_identify_opt_out() -> None:
+    opcao = "I don't wish to self-identify"
+    campo = FormField(
+        label="How would you describe your racial/ethnic background?",
+        field_type="combobox",
+        nearby_text="Select...",
+        options=[
+            "White or European",
+            "Hispanic, Latinx or of Spanish Origin",
+            opcao,
+        ],
+    )
+    valor, origem, precisa_humano, _categoria = resolve_local(
+        campo, CandidateProfile(), Settings()
+    )
+    assert valor == opcao
+    assert origem == "portal:opcao_nao_responder"
+    assert precisa_humano is False
+
+
 def test_credential_barrier_raises_human_action_required() -> None:
     class Pagina:
         def evaluate(self, expression, _name=None):
@@ -1315,6 +1335,8 @@ def test_snapshot_js_discards_decorative_and_honeypot_controls() -> None:
     assert 'tabindex' in _SNAPSHOT_JS
     assert 'requiredInput' in _SNAPSHOT_JS
     assert 'iti__search-input' in _SNAPSHOT_JS
+    assert "'react-select-' + el.id + '-listbox'" in _SNAPSHOT_JS
+    assert 'aria-controls' in _SNAPSHOT_JS
     assert 'hp[_-]' in _SNAPSHOT_JS
     assert '!playerControl(el) && !decorative(el)' in _SNAPSHOT_JS
     assert 'const marcados = arredores' in _SNAPSHOT_JS
