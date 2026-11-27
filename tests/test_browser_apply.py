@@ -816,6 +816,40 @@ def test_fill_field_uses_select_option_for_selects() -> None:
     assert locator.selected == "Brasil (+55)"
 
 
+def test_fill_field_select_aceita_rotulo_equivalente_do_linkedin() -> None:
+    class Locator:
+        def __init__(self) -> None:
+            self.selected = ""
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def evaluate(self, expression, *args):
+            return [
+                {"value": "US", "label": "United States (+1)"},
+                {"value": "BR", "label": "Brazil (+55)"},
+            ]
+
+        def select_option(self, value="", label="", **kwargs):
+            self.selected = value or label
+
+        def fill(self, value):
+            raise AssertionError("select não deve usar fill()")
+
+    locator = Locator()
+
+    class Page:
+        def locator(self, selector):
+            return locator
+
+    assert fill_field(Page(), 1, "select", "Brasil (+55)") is True
+    assert locator.selected == "BR"
+
+
 def test_submit_is_blocked_without_persisted_approved() -> None:
     approval = ApprovalRequest(status="PENDING")
     agent = object.__new__(BrowserApplyAgent)

@@ -1012,10 +1012,66 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
             truthy,
         )
     elif kind == "select":
+        alvo = str(value or "").strip()
+        opcoes: list[dict[str, str]] = []
         try:
-            target.select_option(label=value)
+            opcoes = list(
+                target.evaluate(
+                    "(el) => [...el.options].map(o => ({"
+                    "value: String(o.value || ''), label: String(o.textContent || '').trim()}))"
+                )
+                or []
+            )
         except Exception:
-            target.select_option(value)
+            opcoes = []
+        if opcoes:
+            alvo_norm = re.sub(r"\W+", " ", alvo.lower()).strip()
+            sinonimos = {"brazil": "brasil", "brasil": "brazil"}
+
+            def normalizar(texto: str) -> str:
+                resultado = re.sub(r"\W+", " ", str(texto or "").lower()).strip()
+                return " ".join(sinonimos.get(parte, parte) for parte in resultado.split())
+
+            alvo_norm = normalizar(alvo)
+            escolhida = ""
+            for opcao in opcoes:
+                for campo in ("value", "label"):
+                    bruto = str(opcao.get(campo) or "").strip()
+                    if bruto and bruto.lower() == alvo.lower():
+                        escolhida = str(opcao.get("value") or "")
+                        break
+                if escolhida:
+                    break
+            if not escolhida:
+                for opcao in opcoes:
+                    if normalizar(opcao.get("label")) == alvo_norm:
+                        escolhida = str(opcao.get("value") or "")
+                        break
+            if not escolhida and alvo_norm:
+                for opcao in opcoes:
+                    rotulo = normalizar(opcao.get("label"))
+                    if rotulo and (alvo_norm in rotulo or rotulo in alvo_norm):
+                        escolhida = str(opcao.get("value") or "")
+                        break
+            if not escolhida and "+55" in alvo:
+                for opcao in opcoes:
+                    if "+55" in str(opcao.get("label") or ""):
+                        escolhida = str(opcao.get("value") or "")
+                        break
+            if not escolhida:
+                log_event(
+                    "browser_apply_select_no_match",
+                    index=index,
+                    desired_hash=hashlib.sha256(alvo.encode("utf-8")).hexdigest()[:8],
+                    options=str([opcao.get("label") for opcao in opcoes])[:300],
+                )
+                return False
+            target.select_option(value=escolhida)
+            return True
+        try:
+            target.select_option(label=alvo)
+        except Exception:
+            target.select_option(alvo)
     elif kind == "combobox":
         # O React Select pode re-renderizar no meio da escolha e deixar a
         # listbox vazia por um instante. Tentar de novo com o locator atual
