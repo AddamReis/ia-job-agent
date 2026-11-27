@@ -120,10 +120,14 @@ _LANDING_STATE_JS = r"""
     }
     return (el.getAttribute('aria-label') || '').trim();
   };
-  const nodes = [...document.querySelectorAll('a,button,[role="button"],label')]
-    .filter(visible);
+  const nodes = [...document.querySelectorAll(
+    'a,button,[role="button"],label,input[type=button],input[type=submit],input[type=image]'
+  )].filter(visible);
   const buttons = nodes.map(el => ({
-    text: (el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+    text: (el.matches('input')
+      ? (el.value || el.getAttribute('aria-label') || '')
+      : (el.innerText || el.getAttribute('aria-label') || '')
+    ).trim().slice(0, 120),
     aria: (el.getAttribute('aria-label') || '').trim().slice(0, 120),
     href: el.getAttribute('href') || '',
   })).filter(b => b.text).slice(0, 40);
@@ -134,14 +138,34 @@ _LANDING_STATE_JS = r"""
     aria: (el.getAttribute('aria-label') || '').trim().slice(0, 120),
     checked: Boolean(el.checked || el.getAttribute('aria-checked') === 'true'),
   })).filter(c => c.text || c.aria).slice(0, 20);
+  // Botoes em <input> e seletor de idioma nao sao campos de candidatura.
+  const naoFormulario = (el) => {
+    const tipo = (el.type || '').toLowerCase();
+    if (['hidden', 'button', 'submit', 'reset', 'image'].includes(tipo)) return true;
+    const valor = (el.value || '').trim();
+    const papel = (el.getAttribute('role') || '').toLowerCase();
+    if (tipo === 'search' || papel === 'searchbox') return true;
+    if (papel === 'combobox' && (
+      (el.getAttribute('inputmode') || '').toLowerCase() === 'none' ||
+      /^(portugu[eê]s|english|español|espanhol|pt[- ]?br|en[- ]?us|es[- ]?es)$/i.test(valor)
+    )) return true;
+    const contexto = [
+      el.name || '', el.id || '', el.placeholder || '',
+      el.getAttribute('aria-label') || '',
+      ...[...(el.labels || [])].map(l => l.innerText || ''),
+    ].join(' ');
+    return /^(language|idioma|locale)$/i.test(contexto.trim());
+  };
+  const controles = [...document.querySelectorAll(
+    'input:not([type=hidden]),textarea,select'
+  )].filter(visible).filter(el => !naoFormulario(el));
   const body = (document.body.innerText || '');
   return {
     url: location.href,
     text: body.slice(0, 1600),
     buttons,
     checkboxes,
-    has_form: [...document.querySelectorAll('input:not([type=hidden]),textarea,select')]
-      .filter(visible).length > 0,
+    has_form: controles.length > 0,
     has_file: [...document.querySelectorAll('input[type=file]')]
       .filter(visible).length > 0,
     passwords: [...document.querySelectorAll('input[type=password]')]
@@ -1333,8 +1357,17 @@ class BrowserApplyAgent:
                     for item in explicitos
                     if self._is_apply_cta_label(str(item.get("text", "")))
                 ]
-                if len(candidatos_seguros) == 1:
-                    acao = str(candidatos_seguros[0]["text"]).strip()
+                # Portais como Quickin repetem o mesmo CTA no header e no corpo;
+                # rótulo/destino idênticos são uma única decisão segura.
+                unicos: dict[tuple[str, str], dict[str, Any]] = {}
+                for item in candidatos_seguros:
+                    chave = (
+                        self._normalize_landing_signature([str(item.get("text", ""))]),
+                        str(item.get("href") or ""),
+                    )
+                    unicos.setdefault(chave, item)
+                if len(unicos) == 1:
+                    acao = str(next(iter(unicos.values()))["text"]).strip()
                     decidido = SimpleNamespace(
                         action=acao,
                         source="regra:cta_explicito_na_tela",

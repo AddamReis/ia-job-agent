@@ -807,6 +807,71 @@ def test_advance_external_landing_decides_safe_cta(tmp_path) -> None:
     assert agent._pending_ui_actions[0]["action"] == "Aplicar a la posición"
 
 
+def test_cta_duplicado_com_mesmo_destino_e_unica_decisao_segura(tmp_path) -> None:
+    class Locator:
+        def count(self) -> int:
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        def is_visible(self) -> bool:
+            return True
+
+        def click(self) -> None:
+            return None
+
+    class Page:
+        def __init__(self) -> None:
+            self.url = "https://jobs.quickin.io/addvisor/jobs/42"
+            self.context = self
+            self.pages = [self]
+            self.clicado = False
+
+        def evaluate(self, expression, name=None):
+            if "has_form" in expression:
+                return {
+                    "url": self.url,
+                    "text": "CANDIDATAR-SE",
+                    "buttons": [
+                        {"text": "CANDIDATAR-SE", "href": "/apply"},
+                        {"text": "CANDIDATAR-SE", "href": "/apply"},
+                    ],
+                    "has_form": self.clicado,
+                    "has_file": self.clicado,
+                    "blocked": False,
+                }
+            return {}
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Locator()
+
+        def get_by_text(self, *_args, **_kwargs):
+            return Locator()
+
+        def locator(self, *_args, **_kwargs):
+            return Locator()
+
+        def wait_for_timeout(self, _ms) -> None:
+            return None
+
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = object()
+    agent.resolver = object()
+    agent.browser = object()
+    agent._pending_ui_actions = []
+    agent._decide_ui_action = lambda *_args: SimpleNamespace(
+        action="", needs_human=True, source="llm", reason="sem decisão"
+    )
+
+    page = Page()
+    result = agent._advance_external_landing(page)
+
+    assert result is page
+    assert len(agent._pending_ui_actions) == 1
+    assert agent._pending_ui_actions[0]["source"] == "regra:cta_explicito_na_tela"
+
+
 def test_fill_field_uses_select_option_for_selects() -> None:
     class Locator:
         def __init__(self) -> None:
