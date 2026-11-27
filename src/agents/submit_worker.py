@@ -23,6 +23,7 @@ from .qualification import (
     currency_rejection_reason,
     detect_currencies,
     explicit_currency_codes,
+    expire_stale_jobs,
     is_remote_location,
     stale_reason,
 )
@@ -99,6 +100,10 @@ class SubmitWorker:
         self.bus = bus
 
     def run(self, limit: int | None = None) -> dict[str, int]:
+        # A vaga pode envelhecer enquanto esperava o clique na PWA. Antes de
+        # consumir o outbox, encerra o que saiu da janela para que a fila e os
+        # contadores da PWA deixem de exibi-la como autorizável.
+        expire_stale_jobs(self.repo, self.settings)
         eventos = self.repo.claim_agent_events(CONSUMER, limit=max(20, limit or 0))
         counters = {
             "events": len(eventos),
@@ -125,6 +130,21 @@ class SubmitWorker:
                     event_id, status="FAILED", error="vaga ou aprovação não encontrada"
                 )
                 counters["errors"] += 1
+                continue
+
+            # A varredura acima já marcou a vaga EXPIRED; ainda assim o evento
+            # deve registrar o motivo real da reprovação, não só o status novo.
+            stale = stale_reason(job, self.settings)
+            if stale:
+                motivo = f"fora da janela de recência: {stale}"
+                self.repo.ack_agent_event(event_id, status="FAILED", error=motivo)
+                counters["blocked"] += 1
+                log_event(
+                    "submit_worker_blocked",
+                    job_id=job_id,
+                    approval_id=approval.id,
+                    reason=motivo,
+                )
                 continue
 
             bloqueio = submit_preflight(job, approval, self.settings, self.repo)

@@ -172,24 +172,30 @@ class ClassificationWorker:
         config = company.trusted_portal_config if company is not None else {}
         lane = "llm"
 
+        # Recência vale para as duas rotas: vaga antiga é histórico, nunca
+        # aprovação determinística nem pelo LLM local.
+        stale = stale_reason(job, self.settings)
+        if stale:
+            job.status = JobStatus.EXPIRED
+            job.score = 0
+            job.qualification = QualificationResult(
+                score=0,
+                decision="SKIP",
+                reasons=[stale],
+                hard_reject_reason=stale,
+            )
+            self.repo.update_job(job)
+            log_event("classification_skipped_stale", job_id=job.id, reason=stale)
+            return {
+                "job_id": job.id,
+                "decision": "SKIP",
+                "lane": lane,
+                "known_portal": known,
+                "reason": stale,
+            }
+
         if prioridade == 0 and config:
             lane = "fast_lane"
-            # Recência também vale no fast lane: vaga antiga é histórico, não
-            # aprovação determinística.
-            stale = stale_reason(job, self.settings)
-            if stale:
-                job.status = JobStatus.EXPIRED
-                job.score = 0
-                job.qualification = None
-                self.repo.update_job(job)
-                log_event("classification_skipped_stale", job_id=job.id, reason=stale)
-                return {
-                    "job_id": job.id,
-                    "decision": "SKIP",
-                    "lane": lane,
-                    "known_portal": known,
-                    "reason": stale,
-                }
             result = FastLaneAgent(self.repo, self.settings, company.name).qualify(job, config)
             decision, score = result.decision, result.score
         else:

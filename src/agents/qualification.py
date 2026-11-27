@@ -233,6 +233,42 @@ def stale_reason(job: JobOpportunity, settings: Settings) -> str | None:
     return None
 
 
+def expire_stale_jobs(
+    repo: Repository, settings: Settings, *, limit: int | None = None
+) -> int:
+    """Move vagas aprováveis fora da janela para ``EXPIRED``.
+
+    A revalidação no ``submit_preflight`` já impedia o envio, mas deixava a
+    vaga ocupar a aba "Aguardando Aprovação" e o botão da PWA habilitado. Esta
+    varredura torna o estado persistente e faz contadores, detalhe e fila
+    convergirem para a mesma decisão determinística.
+    """
+    listar = getattr(repo, "list_jobs", None)
+    atualizar = getattr(repo, "update_job", None)
+    if listar is None or atualizar is None:
+        return 0
+    candidatas = listar(status=[JobStatus.QUALIFIED, JobStatus.PENDING_APPROVAL])
+    expiradas = 0
+    for job in candidatas:
+        motivo = stale_reason(job, settings)
+        if not motivo:
+            continue
+        job.status = JobStatus.EXPIRED
+        job.score = 0
+        job.qualification = QualificationResult(
+            score=0,
+            decision="SKIP",
+            reasons=[motivo],
+            hard_reject_reason=motivo,
+        )
+        atualizar(job)
+        expiradas += 1
+        log_event("approval_expired_stale", job_id=job.id, reason=motivo)
+        if limit is not None and expiradas >= limit:
+            break
+    return expiradas
+
+
 def job_side_language_reason(assessment: "JobFitAssessment") -> str:
     """Motivo de reprovação semântica sem explicar o que o candidato já tem.
 

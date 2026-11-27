@@ -323,6 +323,29 @@ def test_safety_net_expires_stale_jobs_and_caps_residuals(
     assert qualification.calls == [recente.id]
 
 
+def test_classification_worker_expires_stale_job_before_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UpdatingRepo(StubRepo):
+        def update_job(self, job: JobOpportunity) -> None:
+            super().update_job(job)
+            self.jobs[job.id] = job
+
+    antiga = _job("Acme", "Vaga antiga")
+    antiga.posted_at = datetime.now() - timedelta(hours=200)
+    repo = UpdatingRepo([antiga])
+    qualification = RecordingQualification()
+    worker = ClassificationWorker(repo, _settings(), qualification)
+
+    counters = worker.run()
+
+    assert counters["rejected"] == 1
+    assert qualification.calls == []
+    assert antiga.status == JobStatus.EXPIRED
+    assert antiga.qualification is not None
+    assert antiga.qualification.decision == "SKIP"
+
+
 def test_streaming_classifier_classifies_on_discovered_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

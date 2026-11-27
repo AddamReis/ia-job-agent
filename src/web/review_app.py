@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from ..agents.qualification import (
     detect_currencies,
     explicit_currency_codes,
+    expire_stale_jobs,
     is_remote_location,
     currency_rejection_reason,
     stale_reason,
@@ -118,6 +119,8 @@ def can_authorize_apply(
         return False
     if job.status not in {JobStatus.QUALIFIED, JobStatus.PENDING_APPROVAL}:
         return False
+    if stale_reason(job, _settings()) is not None:
+        return False
     if job.has_applied or application_exists:
         return False
     # APPROVED aguardando o worker não precisa de outro clique; REJECTED já foi
@@ -139,6 +142,10 @@ def record_review_action(
     """
     payload = payload or {}
     checks = checks or {}
+    if action == "APPROVED":
+        stale = stale_reason(job, _settings())
+        if stale:
+            raise ValueError(f"vaga fora da janela de recência: {stale}")
     atual = repo.get_approval_for_job(job.id)
     if atual is None or atual.status == "REJECTED":
         aprovacao = ApprovalRequest(
@@ -205,6 +212,8 @@ def _bucket(
         return "errors"
     if job.status == JobStatus.SUBMITTED or job.has_applied:
         return "submitted"
+    if stale_reason(job, _settings()) is not None:
+        return "rejected"
     if job.status in {JobStatus.REJECTED_BY_FILTER, JobStatus.EXPIRED} or (
         job.qualification is not None and job.qualification.decision in {"SKIP", "REJECT"}
     ):
@@ -296,6 +305,11 @@ def _summary_job(
         if qualification and qualification.reasons
         else (qualification.hard_reject_reason if qualification else "ainda não classificada")
     )
+    stale = stale_reason(job, _settings())
+    hard_reject = qualification.hard_reject_reason if qualification else None
+    if stale:
+        reason = stale
+        hard_reject = stale
     if automation_error:
         reason = f"Erro: {automation_error}"
     return {
@@ -305,7 +319,7 @@ def _summary_job(
         "location": job.location_normalized or job.location,
         "score": job.score,
         "decision": qualification.decision if qualification else None,
-        "hard_reject_reason": qualification.hard_reject_reason if qualification else None,
+        "hard_reject_reason": hard_reject,
         "reason": reason,
         "missing_core": missing_core_technologies(job),
         "status": job.status.value,
@@ -369,6 +383,7 @@ def compute_checks(job: JobOpportunity) -> dict[str, dict[str, Any]]:
 def job_detail(job_id: str) -> dict[str, Any] | None:
     repo = _repo()
     settings = _settings()
+    expire_stale_jobs(repo, settings)
     job = repo.get_job(job_id)
     if job is None:
         return None
@@ -422,6 +437,7 @@ def job_index(
     """Lista paginada: filtro de texto, bucket, ordem e LIMIT resolvidos no SQL."""
     settings = _settings()
     repo = _repo()
+    expire_stale_jobs(repo, settings)
     result = repo.query_review_jobs(
         bucket=bucket,
         query=query,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -80,6 +80,16 @@ class StubRepo:
     def get_job(self, job_id: str):
         return self.jobs.get(job_id)
 
+    def list_jobs(self, status=None, limit=None):
+        jobs = [
+            job for job in self.jobs.values()
+            if status is None or job.status in (status if isinstance(status, list) else [status])
+        ]
+        return jobs[:limit] if limit else jobs
+
+    def update_job(self, job) -> None:
+        self.jobs[job.id] = job
+
     def get_approval_for_job(self, job_id: str):
         return next(
             (item for item in self.approvals if item.opportunity_id == job_id), None
@@ -110,6 +120,8 @@ def _job(
         status=status,
         has_applied=has_applied,
         created_at=datetime.fromisoformat(created_at),
+        posted_at=datetime.now() - timedelta(hours=1),
+        posted_precision="hour",
     )
 
 
@@ -379,4 +391,34 @@ def test_only_eligible_jobs_can_authorize_apply() -> None:
     assert review.can_authorize_apply(
         _job("aprovado", JobStatus.QUALIFIED), ApprovalRequest(status="APPROVED")
     ) is False
+
+
+def test_stale_job_leaves_approval_queue_and_cannot_be_authorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job("antiga", JobStatus.QUALIFIED)
+    job.posted_at = datetime.now() - timedelta(hours=200)
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo([job]))
+
+    result = review.job_index()
+
+    assert job.status is JobStatus.EXPIRED
+    assert result["counts"]["approval"] == 0
+    assert result["counts"]["rejected"] == 1
+
+    rejected = review.job_index("rejected")
+    assert rejected["items"][0]["hard_reject_reason"] == "publicação fora da janela de 96 horas"
+
+    detail = review.job_detail(job.id)
+    assert detail is not None
+    assert detail["can_check"] is False
+    assert detail["checks"]["recency"]["ok"] is False
+
+
+def test_stale_job_direct_approval_is_refused() -> None:
+    job = _job("antiga", JobStatus.QUALIFIED)
+    job.posted_at = datetime.now() - timedelta(hours=200)
+
+    with pytest.raises(ValueError, match="fora da janela"):
+        review.record_review_action(ActionRepo(), job, "APPROVED")
 
