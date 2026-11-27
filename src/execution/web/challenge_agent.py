@@ -38,7 +38,8 @@ _OBSERVE_JS = r"""
     return r.width > 0 && r.height > 0;
   };
   const texto = (document.body.innerText || '').slice(0, 6000)
-    .replace(/protected by (?:re|h)?captcha/gi, ' ');
+    .replace(/protected by (?:re|h)?captcha/gi, ' ')
+    .replace(/recaptcha\.anchor\.[A-Za-z.]+\([^)]*\)/gi, ' ');
   const inputs = [...document.querySelectorAll('input')].filter(visivel).map(i => ({
     type: (i.type || 'text').toLowerCase(),
     name: i.name || '',
@@ -60,9 +61,11 @@ _OBSERVE_JS = r"""
   // com largura/altura zero e não deve transformar formulário em CAPTCHA.
   const captchaFrames = frames.filter(f => {
     const r = f.rect || {};
-    return f.visible && Number(r.width) > 0 && Number(r.height) > 0 &&
-      /captcha|recaptcha|hcaptcha|challenge|arkose|fun captcha|protechts|ns1p/i
-        .test((f.src || '') + ' ' + (f.title || ''));
+    const origem = (f.src || '') + ' ' + (f.title || '');
+    // size=invisible/anchor é o widget passivo do reCAPTCHA; não é desafio.
+    const passivo = /recaptcha\/enterprise\/anchor|[?&]size=invisible|[?&]frame=checkbox|checkbox-invisible/i.test(origem);
+    return !passivo && f.visible && Number(r.width) > 0 && Number(r.height) > 0 &&
+      /captcha|recaptcha|hcaptcha|challenge|arkose|fun captcha|protechts|ns1p/i.test(origem);
   });
   const senhas = inputs.filter(i => i.type === 'password').length;
   const mfa = /\b(?:mfa|2fa|verification code|código de verificação|codigo de verificacion|one[- ]time code|otp)\b/i.test(texto);
@@ -100,7 +103,17 @@ _FRAME_CHALLENGE_RE = re.compile(
 # O anchor invisível do reCAPTCHA e o checkbox oculto do hCaptcha não são o
 # desafio em si: capturá-los mostra apenas o formulário por trás do widget.
 _FRAME_ANCHOR_RE = re.compile(
-    r"recaptcha/enterprise/anchor|frame=checkbox|checkbox-invisible", re.I
+    r"recaptcha/enterprise/anchor|frame=checkbox|checkbox-invisible|size=invisible", re.I
+)
+# Texto que realmente descreve um desafio visível. "captcha" sozinho pode ser
+# selo de branding ou script do widget invisível e não autoriza acionar a visão.
+_CHALLENGE_TEXT_RE = re.compile(
+    r"unusual activity|atividade incomum|(?:confirm|verify) you are human|"
+    r"verifica[cç][aã]o de (?:human|seguran[cç]a|identidade)|"
+    r"verificaci[oó]n de (?:humanidad|seguridad|identidad)|"
+    r"verificar que (?:voc[eê]|es) (?:é|e) humano|checkpoint|"
+    r"desafio de seguran[cç]a|(?:digite|transcreva|enter|type) (?:the )?(?:captcha|caracteres|characters)",
+    re.I,
 )
 
 # hCaptcha/iCIMS podem renderizar o iframe do desafio fora do viewport (ex.:
@@ -159,6 +172,22 @@ class ChallengeAgent:
             dados = dict(page.evaluate(_OBSERVE_JS) or {})
         except Exception:
             return {}
+        originais = list(dados.get("captcha_frames") or [])
+        if originais:
+            filtrados = [
+                item
+                for item in originais
+                if not _FRAME_ANCHOR_RE.search(
+                    f"{item.get('src') or ''} {item.get('title') or ''}"
+                )
+            ]
+            dados["captcha_frames"] = filtrados
+            if not filtrados and not _CHALLENGE_TEXT_RE.search(
+                str(dados.get("text") or "")
+            ):
+                # inhire/LinkedIn mantêm o anchor invisível do reCAPTCHA na
+                # página: sem desafio renderizado não há o que resolver.
+                dados["captcha"] = False
         for frame in list(getattr(page, "frames", []))[1:]:
             url_frame = str(getattr(frame, "url", "") or "")
             if _FRAME_ANCHOR_RE.search(url_frame):

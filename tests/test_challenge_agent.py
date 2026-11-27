@@ -331,6 +331,28 @@ def test_anchor_invisivel_do_recaptcha_nao_e_desafio() -> None:
     assert agente.solve(pagina, force=True) is False
 
 
+def test_anchor_invisivel_com_area_nao_marca_captcha_na_observacao() -> None:
+    observacao = _obs(captcha=True)
+    observacao["captcha_frames"] = [
+        {
+            "src": "https://www.google.com/recaptcha/enterprise/anchor?size=invisible",
+            "title": "reCAPTCHA",
+            "visible": True,
+            "rect": {"x": 993, "y": 661, "width": 256, "height": 60},
+        }
+    ]
+    pagina = FakePage([observacao])
+    llm = FakeLLM(CaptchaSolution(kind="text", answer="INVENTADO", confidence=0.99))
+    agente = ChallengeAgent(llm, FakeCredentials())
+
+    visto = agente.observe(pagina)
+
+    assert visto["captcha"] is False
+    assert visto["captcha_frames"] == []
+    assert agente.solve(pagina) is False
+    assert llm.mensagens == []
+
+
 def test_force_em_formulario_sem_desafio_visivel_nao_chama_a_visao() -> None:
     pagina = FakePage([_obs()] * 4)
     llm = FakeLLM(CaptchaSolution(kind="text", answer="INVENTADO", confidence=0.99))
