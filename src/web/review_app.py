@@ -566,7 +566,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                     job_index(
                         first("bucket", DEFAULT_BUCKET),
                         query=first("q", ""),
-                        sort=first("sort", "newer"),
+                        sort=first("sort", ""),
                         page=page,
                     )
                 )
