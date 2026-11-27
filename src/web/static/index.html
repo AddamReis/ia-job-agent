@@ -19,8 +19,10 @@
     <button id="refresh" class="icon-btn" title="Atualizar" aria-label="Atualizar">↻</button>
   </header>
 
-  <div class="filter">
-    <label for="bucket">Lista</label>
+  <div class="filters" role="group" aria-label="Filtros de vagas">
+    <input id="search" type="search" aria-label="Buscar no texto das vagas"
+           placeholder="Buscar: título, empresa, descrição, análise…" autocomplete="off">
+    <label class="sr-only" for="bucket">Lista</label>
     <select id="bucket" aria-label="Filtrar vagas">
       <option value="approval" selected>Aguardando Aprovação</option>
       <option value="pending">A Classificar</option>
@@ -29,11 +31,12 @@
       <option value="errors">Erros</option>
       <option value="all">Todas</option>
     </select>
-    <input id="search" type="search" aria-label="Buscar no texto das vagas"
-           placeholder="Buscar: título, empresa, descrição, análise…" autocomplete="off">
-    <select id="sort" aria-label="Ordenar pela hora de inclusão">
-      <option value="newer" selected>Mais recentes</option>
-      <option value="older">Mais antigos</option>
+    <label class="sr-only" for="sort">Ordenação</label>
+    <select id="sort" aria-label="Ordenar vagas">
+      <option value="created_desc">Data inclusão mais recente</option>
+      <option value="created_asc">Data inclusão mais antiga</option>
+      <option value="classified_desc" selected>Data classificação mais recente</option>
+      <option value="classified_asc">Data classificação mais antiga</option>
     </select>
   </div>
 

@@ -1434,6 +1434,62 @@ def test_recheck_remote_uses_description_not_sidebar_text() -> None:
     )
 
 
+def test_recheck_remote_accepts_remote_card_without_description_and_sidebar_noise() -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    job = JobOpportunity(
+        external_id="4493861962",
+        title="Software Developer Backend - Remote",
+        location="New Zealand",
+        description="",
+    )
+
+    agent._recheck_remote(
+        job,
+        {
+            "job_text": "",
+            "title": "Software Developer Backend - Remote",
+            "text": "Recommended jobs · the office, your home, or a blend of both",
+        },
+    )
+
+
+def test_recheck_remote_still_blocks_hybrid_header_without_description() -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings()
+    job = JobOpportunity(
+        external_id="hibrida",
+        title="Software Engineer",
+        location="Colombia - Bogota",
+        description="",
+    )
+
+    with pytest.raises(ValidationError, match="h[íi]brido"):
+        agent._recheck_remote(
+            job,
+            {
+                "job_text": "",
+                "title": "Software Engineer — Híbrido",
+                "text": "Trabaja 100 % remoto",
+            },
+        )
+
+
+def test_primary_apply_cta_opens_form_even_when_landing_has_other_fields() -> None:
+    class CtaPage(FakePage):
+        def evaluate(self, script: str, *_args):
+            assert "similar-jobs" in script
+            return "Apply Now"
+
+    page = CtaPage("https://joblet.ai/jobs/micro1")
+    agent = object.__new__(BrowserApplyAgent)
+
+    assert agent._click_primary_apply_cta(page) is page
+    assert ("https://joblet.ai/jobs/micro1", "Apply Now") in agent._primary_cta_clicked
+    # O mesmo CTA não é clicado duas vezes no mesmo fluxo.
+    assert agent._click_primary_apply_cta(page) is None
+
+
 def test_salary_evidence_resolves_desired_salary_and_csalary() -> None:
     perfil = CandidateProfile(expectations={"salary": "A combinar"})
     settings = Settings()

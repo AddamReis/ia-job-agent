@@ -47,9 +47,9 @@ body {
   cursor: pointer;
 }
 
-.filter {
-  display: flex;
-  flex-wrap: wrap;
+.filters {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 6px 16px 12px;
@@ -59,8 +59,20 @@ body {
   z-index: 4;
 }
 
-.filter label { color: var(--muted); font-size: 13px; }
-.filter select, .filter input {
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.filters select, .filters input {
+  width: 100%;
   min-width: 0;
   background: var(--panel);
   color: var(--text);
@@ -71,9 +83,14 @@ body {
   font-weight: 600;
   cursor: pointer;
 }
-.filter select#bucket { flex: 1 1 190px; }
-.filter input#search { flex: 2 1 240px; font-weight: 400; cursor: text; }
-.filter select#sort { flex: 0 1 150px; }
+.filters input#search { font-weight: 400; cursor: text; }
+
+@media (max-width: 640px) {
+  .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filters input#search { grid-column: 1 / -1; }
+  .filters select { padding: 10px 8px; font-size: 13px; }
+  .topbar { padding: 14px 12px 8px; }
+}
 
 .pager {
   display: flex;

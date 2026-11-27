@@ -2024,18 +2024,19 @@ class BrowserApplyAgent:
             raise ValidationError("a vaga deixou de ser 100% remota; envio bloqueado")
         job_text = str(snapshot.get("job_text") or job.description or "")
         page_text = str(snapshot.get("text", "") or "")
-        # A descrição publicada é a fonte primária. O texto da página pode
-        # conter cards laterais com "office/home/blend of both" e vetar uma vaga
-        # que é 100% remota; só é usado quando a descrição não existe.
-        remote_ok = is_remote_location(
-            job.location,
-            job.title,
-            job_text or page_text,
-        )
+        # Card/título/descrição da própria vaga são a fonte primária. O texto
+        # renderizado (modal do LinkedIn, "Vagas semelhantes", rodapé) contém
+        # "the office"/"blend of both" e não pode vetoar uma vaga cujo card já
+        # declara 100% remoto — era exatamente o caso de vagas sem descrição.
+        remote_ok = is_remote_location(job.location, job.title, job.description or "")
+        if not remote_ok:
+            remote_ok = is_remote_location(job.location, job.title, job_text or page_text)
         if not remote_ok:
             raise ValidationError("remoto não confirmado na rechecagem pré-envio")
         # O card da vaga pode dizer "Híbrido" mesmo quando a descrição afirma
-        # "100% remoto". O rótulo explícito do cabeçalho vence a descrição.
+        # "100% remoto". O rótulo explícito do cabeçalho vence a descrição;
+        # apenas rótulos fortes (Híbrido/Presencial/On-site) entram aqui —
+        # "the office"/"blend of both" de cards laterais ficam de fora.
         cabecalho = " ".join(
             [
                 str(job.title or ""),
@@ -2116,6 +2117,70 @@ class BrowserApplyAgent:
             self.settings.profile.cv_path or self.profile.documents.get("resume", "")
         )
 
+    def _click_primary_apply_cta(self, page: Any) -> Any | None:
+        """Abre o formulário pelo CTA principal quando o CV ainda não apareceu.
+
+        Portais como o joblet.ai têm um formulário de login/newsletter na página
+        da vaga, então ``snapshot_form`` vê campos e o fluxo antigo desistia do
+        upload sem clicar no "Apply Now" real. Este clique é apenas de abertura:
+        ignora vagas semelhantes, login/OAuth, salvar vaga e botões finais, e
+        nunca submete a candidatura. Devolve a página ativa (pode ser uma nova
+        aba) ou ``None`` quando não há CTA seguro.
+        """
+        clicados = getattr(self, "_primary_cta_clicked", None)
+        if clicados is None:
+            clicados = set()
+            self._primary_cta_clicked = clicados
+        chave_url = str(getattr(page, "url", "") or "")
+        try:
+            antes = {id(item) for item in page.context.pages}
+        except Exception:
+            antes = set()
+        try:
+            rotulo = page.evaluate(
+                r"""() => {
+                  const permitido = /^(?:apply|aplicar|candidatar-se|candidate-se|start application|apply for this job|apply to this job|apply now)\b/i;
+                  const proibido = /sign in|login|oauth|google|linkedin|facebook|apple|submit|enviar|finalizar|review|save job|salvar vaga/i;
+                  const candidatos = [...document.querySelectorAll('button,[role="button"],a')]
+                    .filter((el) => {
+                      const texto = ((el.getAttribute('aria-label') || el.innerText || '') + '').trim().replace(/\s+/g, ' ');
+                      if (!permitido.test(texto) || proibido.test(texto)) return false;
+                      if (el.closest('#similar-jobs, .jd-similar-jobs-list, nav, footer, [class*="similar"]')) return false;
+                      const rect = el.getBoundingClientRect();
+                      return rect.width > 0 && rect.height > 0;
+                    });
+                  if (!candidatos.length) return '';
+                  const alvo = candidatos.find((el) =>
+                    el.matches('.jd-hero-cta-apply, [aria-label="Apply Now"]')
+                  ) || candidatos[0];
+                  alvo.click();
+                  return ((alvo.getAttribute('aria-label') || alvo.innerText || '') + '').trim();
+                }"""
+            )
+        except Exception:
+            return None
+        if not rotulo:
+            return None
+        rotulo = str(rotulo)[:80]
+        if (chave_url, rotulo) in clicados:
+            return None
+        clicados.add((chave_url, rotulo))
+        log_event("browser_apply_primary_cta_for_resume", label=rotulo, url=chave_url[:160])
+        page.wait_for_timeout(2000)
+        try:
+            novas = [item for item in page.context.pages if id(item) not in antes]
+        except Exception:
+            novas = []
+        if novas:
+            navegador = getattr(self, "browser", None)
+            for extra in novas[1:]:
+                if navegador is not None:
+                    navegador.close_tab(extra)
+            if navegador is not None:
+                navegador.close_tab(page)
+            return novas[0]
+        return page
+
     def _handle_resume(
         self, page: Any, snapshot: dict[str, Any]
     ) -> tuple[Any, dict[str, Any], str]:
@@ -2135,6 +2200,16 @@ class BrowserApplyAgent:
             # A tela ainda é a landing da vaga (careerpuck/iCIMS/Greenhouse):
             # abrir o formulário real usando apenas CTA visível na própria tela.
             for _ in range(2):
+                # Portais com form de login/newsletter na página (joblet.ai)
+                # expõem "fields" antes do formulário de candidatura: clicar o
+                # CTA principal da vaga é necessário mesmo nesse caso.
+                aberta = self._click_primary_apply_cta(page)
+                if aberta is not None:
+                    page = aberta
+                    status = ensure_resume_uploaded(page, cv_path)
+                    if status not in pendente:
+                        break
+                    continue
                 atual = snapshot_form(page)
                 if atual.get("fields"):
                     break

@@ -7,10 +7,19 @@ const BUCKETS = [
   ['all', 'Todas'],
 ];
 
+const DEFAULT_SORTS = {
+  approval: 'classified_desc',
+  submitted: 'classified_desc',
+  rejected: 'classified_desc',
+  errors: 'classified_desc',
+  pending: 'created_desc',
+  all: 'created_desc',
+};
+
 const state = {
   bucket: 'approval',
   q: '',
-  sort: 'newer',
+  sort: DEFAULT_SORTS.approval,
   page: 1,
   items: [],
   counts: {},
@@ -424,6 +433,10 @@ function reloadFromStart() {
 
 $('#bucket').addEventListener('change', (ev) => {
   state.bucket = ev.target.value;
+  // Cada aba tem sua ordem natural: inclusão para descoberta/classificação,
+  // classificação para decisão/envio/erro.
+  state.sort = DEFAULT_SORTS[state.bucket] || 'created_desc';
+  $('#sort').value = state.sort;
   reloadFromStart();
 });
 

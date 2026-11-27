@@ -53,9 +53,27 @@ BUCKETS: tuple[tuple[str, str], ...] = (
 )
 BUCKET_KEYS = tuple(key for key, _ in BUCKETS)
 DEFAULT_BUCKET = BUCKETS[0][0]
+# Ordem canônica: inclusão para filas de descoberta/classificação e
+# classificação para filas de decisão/envio/erro.
+SORT_KEYS = ("created_desc", "created_asc", "classified_desc", "classified_asc")
+DEFAULT_SORTS: dict[str, str] = {
+    "all": "created_desc",
+    "pending": "created_desc",
+    "approval": "classified_desc",
+    "submitted": "classified_desc",
+    "rejected": "classified_desc",
+    "errors": "classified_desc",
+}
+SORT_ALIASES = {"newer": "created_desc", "older": "created_asc"}
 PAGE_SIZE = 10
 # Consumidores cuja falha representa erro de automação, não decisão humana.
 AUTOMATION_CONSUMERS = ("application", "apply_submit")
+
+
+def _normalize_sort(sort: str, bucket: str) -> str:
+    """Aceita aliases antigos e aplica o padrão da aba quando não há ordem válida."""
+    normalizado = SORT_ALIASES.get(sort, sort)
+    return normalizado if normalizado in SORT_KEYS else DEFAULT_SORTS.get(bucket, "created_desc")
 
 
 def _settings() -> Settings:
@@ -430,7 +448,7 @@ def job_index(
     bucket: str = DEFAULT_BUCKET,
     *,
     query: str = "",
-    sort: str = "newer",
+    sort: str = "",
     page: int = 1,
     limit: int = PAGE_SIZE,
 ) -> dict[str, Any]:
@@ -441,7 +459,7 @@ def job_index(
     result = repo.query_review_jobs(
         bucket=bucket,
         query=query,
-        sort=sort,
+        sort=_normalize_sort(sort, bucket),
         page=page,
         limit=limit,
         automation_consumers=AUTOMATION_CONSUMERS,

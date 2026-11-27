@@ -47,6 +47,58 @@ from ..models.domain import (
 )
 
 
+def _flatten_search_value(value: Any) -> list[str]:
+    """Achata listas/dicionários de texto sem incluir metadados internos."""
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        texto = value.strip()
+        return [texto] if texto else []
+    if isinstance(value, dict):
+        return [item for inner in value.values() for item in _flatten_search_value(inner)]
+    if isinstance(value, (list, tuple, set)):
+        return [item for inner in value for item in _flatten_search_value(inner)]
+    return [str(value)]
+
+
+def _searchable_job_text(row: Any) -> str:
+    """Texto visível da vaga para a busca da PWA.
+
+    O JSON completo contém campos operacionais (``memory_context``,
+    ``search_query``, ``trace_id``, histórico de aprendizado). Incluí-los fazia
+    uma empresa citada em uma lição aprendida contaminar milhares de vagas e
+    esconder os resultados reais atrás de ruído.
+    """
+    try:
+        dados = json.loads(row.data or "{}")
+    except (TypeError, ValueError):
+        dados = {}
+    partes: list[str] = [
+        str(row.title or ""),
+        str(row.company or ""),
+        str(row.location or ""),
+        str(dados.get("location_normalized") or ""),
+        str(dados.get("description") or ""),
+        str(dados.get("salary_text") or ""),
+        str(dados.get("url") or ""),
+    ]
+    analysis = dados.get("analysis") or {}
+    for chave in (
+        "summary",
+        "seniority",
+        "years_required",
+        "required_skills",
+        "preferred_skills",
+        "language_requirements",
+        "red_flags",
+    ):
+        partes.extend(_flatten_search_value(analysis.get(chave)))
+    qualification = dados.get("qualification") or {}
+    for chave in ("reasons", "hard_reject_reason"):
+        partes.extend(_flatten_search_value(qualification.get(chave)))
+    return " ".join(partes).lower()
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -574,26 +626,34 @@ class Repository:
         texto, o que mantém os números das abas coerentes com a busca.
         """
         buckets = ("approval", "pending", "submitted", "rejected", "errors", "all")
+        sorts = ("created_desc", "created_asc", "classified_desc", "classified_asc")
         bucket = bucket if bucket in buckets else "approval"
-        sort = "older" if sort == "older" else "newer"
+        sort = {"newer": "created_desc", "older": "created_asc"}.get(sort, sort)
+        sort = sort if sort in sorts else "created_desc"
         page = max(1, int(page))
         limit = max(1, min(int(limit), 100))
 
         conditions: list[Any] = []
         term = " ".join((query or "").split())
         if term:
-            # Busca literal: % e _ digitados pelo usuário não viram curinga.
-            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            like = f"%{escaped}%"
-            # ``data`` contém descrição, resumo da análise, motivos e skills.
-            conditions.append(
-                or_(
-                    JobRow.title.ilike(like, escape="\\"),
-                    JobRow.company.ilike(like, escape="\\"),
-                    JobRow.location.ilike(like, escape="\\"),
-                    JobRow.data.ilike(like, escape="\\"),
-                )
-            )
+            # Busca literal sobre o texto visível da vaga. O JSON bruto contém
+            # memória de aprendizado e query de descoberta; pesquisar nele fazia
+            # "Baires" casar com milhares de vagas sem relação com a empresa.
+            needle = term.lower()
+            with self.session() as session:
+                candidatas = session.execute(
+                    select(
+                        JobRow.id,
+                        JobRow.title,
+                        JobRow.company,
+                        JobRow.location,
+                        JobRow.data,
+                    )
+                ).all()
+            encontradas = [
+                row.id for row in candidatas if needle in _searchable_job_text(row)
+            ]
+            conditions.append(JobRow.id.in_(encontradas))
 
         failed_event = exists().where(
             AgentEventRow.job_id == JobRow.id,
@@ -659,8 +719,27 @@ class Repository:
         condition = bucket_condition(bucket)
         if condition is not None:
             stmt = stmt.where(condition)
-        order = JobRow.created_at.asc() if sort == "older" else JobRow.created_at.desc()
-        stmt = stmt.order_by(order, JobRow.id).limit(limit).offset((page - 1) * limit)
+        if self.engine.dialect.name == "sqlite":
+            classified_at = func.coalesce(
+                func.json_extract(JobRow.data, "$.audit_classified_at"),
+                JobRow.created_at,
+            )
+        else:
+            classified_at = func.coalesce(
+                cast(JobRow.data, JSON)["audit_classified_at"].as_string(),
+                JobRow.created_at,
+            )
+        if sort == "created_asc":
+            order = JobRow.created_at.asc()
+        elif sort == "classified_desc":
+            order = classified_at.desc()
+        elif sort == "classified_asc":
+            order = classified_at.asc()
+        else:
+            order = JobRow.created_at.desc()
+        stmt = stmt.order_by(order, JobRow.created_at.desc(), JobRow.id).limit(limit).offset(
+            (page - 1) * limit
+        )
         with self.session() as session:
             jobs = [
                 JobOpportunity.model_validate(json.loads(row.data))

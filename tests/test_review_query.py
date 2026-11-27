@@ -1,6 +1,7 @@
 """Consultas paginadas da PWA resolvidas no banco (SQLite)."""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from src.core.state import JobStatus
@@ -16,16 +17,19 @@ def _add_job(
     created_at: str = "2026-11-23T10:00:00",
     title: str | None = None,
     description: str = "vaga remota",
+    company: str = "Acme",
+    memory_context: str = "",
     has_applied: bool = False,
     qualification: QualificationResult | None = None,
     analysis: JobAnalysis | None = None,
 ) -> JobOpportunity:
     job = JobOpportunity(
         id=job_id,
-        company="Acme",
+        company=company,
         title=title or f"Vaga {job_id}",
         location="Remote",
         description=description,
+        memory_context=memory_context,
         status=status,
         has_applied=has_applied,
         qualification=qualification,
@@ -135,3 +139,54 @@ def test_query_review_jobs_buckets_search_in_analysis_and_error_precedence(tmp_p
     assert [job.id for job in found["items"]] == ["analise"]
     assert found["counts"]["approval"] == 1
     assert found["counts"]["all"] == 1
+
+
+def test_search_matches_company_without_memory_context_noise(tmp_path) -> None:
+    repo = Repository(tmp_path / "agent.db")
+    _add_job(
+        repo, "baires", JobStatus.QUALIFIED,
+        company="BairesDev", title="Senior .NET Developer",
+    )
+    _add_job(
+        repo, "ruido", JobStatus.QUALIFIED,
+        title="Backend Engineer",
+        memory_context=(
+            "[desfecho da candidatura/atenção 3x] title:.net+microsoft+teams: "
+            "BairesDev — Senior Microsoft Teams & .NET Developer - Remote Work"
+        ),
+    )
+
+    for termo in ("Baires", "BairesDev"):
+        resultado = repo.query_review_jobs(bucket="all", query=termo)
+        assert [job.id for job in resultado["items"]] == ["baires"]
+        assert resultado["counts"]["all"] == 1
+
+
+def test_canonical_sort_modes_for_creation_and_classification(tmp_path) -> None:
+    repo = Repository(tmp_path / "agent.db")
+    dados = [
+        ("a", "2026-11-23T10:00:00", "2026-11-25T10:00:00"),
+        ("b", "2026-11-23T11:00:00", "2026-11-24T10:00:00"),
+    ]
+    for job_id, criado, classificado in dados:
+        job = _add_job(repo, job_id, JobStatus.QUALIFIED, created_at=criado)
+        with repo.session() as session:
+            row = session.get(JobRow, job.id)
+            assert row is not None
+            conteudo = json.loads(row.data)
+            conteudo["audit_classified_at"] = classificado
+            row.data = json.dumps(conteudo, ensure_ascii=False)
+
+    def ids(sort: str) -> list[str]:
+        return [
+            job.id
+            for job in repo.query_review_jobs(bucket="all", sort=sort)["items"]
+        ]
+
+    assert ids("created_desc") == ["b", "a"]
+    assert ids("created_asc") == ["a", "b"]
+    assert ids("classified_desc") == ["a", "b"]
+    assert ids("classified_asc") == ["b", "a"]
+    # Aliases antigos continuam válidos para links salvos.
+    assert ids("newer") == ["b", "a"]
+    assert ids("older") == ["a", "b"]

@@ -33,9 +33,10 @@ class StubRepo:
         )
 
     def query_review_jobs(
-        self, *, bucket="approval", query="", sort="newer", page=1, limit=10,
+        self, *, bucket="approval", query="", sort="", page=1, limit=10,
         automation_consumers=(),
     ):
+        sort = review._normalize_sort(sort, bucket)
         term = " ".join((query or "").split()).lower()
         jobs = list(self.jobs.values())
         if term:
@@ -50,7 +51,16 @@ class StubRepo:
         if bucket not in review.BUCKET_KEYS:
             bucket = "approval"
         jobs = [job for job in jobs if self._bucket(job) == bucket]
-        jobs.sort(key=lambda job: job.created_at, reverse=sort != "older")
+        if sort == "created_asc":
+            jobs.sort(key=lambda job: job.created_at)
+        elif sort == "classified_asc":
+            jobs.sort(key=lambda job: job.audit_classified_at or job.created_at)
+        elif sort == "classified_desc":
+            jobs.sort(
+                key=lambda job: job.audit_classified_at or job.created_at, reverse=True
+            )
+        else:
+            jobs.sort(key=lambda job: job.created_at, reverse=True)
         total = len(jobs)
         pages = (total + limit - 1) // limit
         page = max(1, page)
@@ -59,7 +69,7 @@ class StubRepo:
             "counts": counts,
             "bucket": bucket,
             "query": term,
-            "sort": "older" if sort == "older" else "newer",
+            "sort": sort,
             "page": page,
             "limit": limit,
             "total": total,
@@ -158,6 +168,24 @@ def test_bucket_order_counts_and_default(monkeypatch: pytest.MonkeyPatch) -> Non
     assert [item["id"] for item in result["items"]] == ["wait"]
     assert result["labels"]["approval"] == "Aguardando Aprovação"
     assert result["labels"]["all"] == "Todas"
+    assert result["sort"] == "classified_desc"
+
+
+def test_sort_defaults_follow_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(review, "_repo", lambda: StubRepo([_job("vaga", JobStatus.QUALIFIED)]))
+
+    esperado = {
+        "approval": "classified_desc",
+        "submitted": "classified_desc",
+        "rejected": "classified_desc",
+        "errors": "classified_desc",
+        "pending": "created_desc",
+        "all": "created_desc",
+    }
+    for bucket, sort in esperado.items():
+        assert review.job_index(bucket)["sort"] == sort
+    assert review.job_index("all", sort="older")["sort"] == "created_asc"
+    assert review.job_index("all", sort="classified_asc")["sort"] == "classified_asc"
 
 
 def test_unclassified_jobs_have_own_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
