@@ -981,30 +981,55 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
     elif kind in {"checkbox", "radio"}:
         truthy = value.strip().lower() in {"true", "sim", "yes", "1", "checked"}
         if kind == "radio" and not truthy:
-            # Radio de currículo recebe o CAMINHO como valor. Nunca marque o
-            # primeiro da grupo: escolha a opção cujo rótulo contém o arquivo.
-            info = target.evaluate(
-                """(el) => {
-                  const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
-                  const parentText = el.parentElement ? (el.parentElement.innerText || '') : '';
+            # Radio de currículo recebe o CAMINHO como valor; outros radios
+            # recebem o valor decidido pelo operador (ex.: PJ/CLT). Em ambos
+            # os casos a escolha segura é procurar em TODO o grupo — o rótulo
+            # visível pode ser "Contractor" enquanto o value é "PJ".
+            resultado = target.evaluate(
+                r"""(el, wanted) => {
                   const group = el.name
                     ? [...document.querySelectorAll('input[type=radio]')]
                         .filter(r => r.name === el.name)
                     : [el];
-                  return {text: label + ' ' + parentText, count: group.length};
-                }"""
+                  const norm = s => String(s || '').toLowerCase().replace(/\W+/g, ' ').trim();
+                  const want = norm(wanted);
+                  const opts = group.map(r => {
+                    const label = r.getAttribute('aria-label') || r.getAttribute('title') || '';
+                    const parentText = r.parentElement ? (r.parentElement.innerText || '') : '';
+                    return {
+                      el: r,
+                      value: String(r.value || ''),
+                      text: norm(label + ' ' + parentText),
+                    };
+                  });
+                  const describe = () => opts
+                    .map(o => (o.value + ':' + o.text).slice(0, 90)).join(' | ');
+                  if (group.length === 1) {
+                    if (!group[0].checked) group[0].click();
+                    return {matched: true, clicked: !!group[0].checked, options: describe()};
+                  }
+                  const found = opts.find(o =>
+                    (want && norm(o.value) === want)
+                    || (want && o.text === want)
+                    || (want && o.text.includes(want))
+                    || (want && want.includes(o.text))
+                  );
+                  if (!found) {
+                    return {matched: false, options: describe()};
+                  }
+                  if (!found.el.checked) found.el.click();
+                  return {matched: true, clicked: !!found.el.checked, options: describe()};
+                }""",
+                Path(value.strip()).name if value.strip() else "",
             ) or {}
-            desired = Path(value.strip()).name if value.strip() else ""
-            matches = desired and desired.lower() in str(info.get("text", "")).lower()
-            if not matches and int(info.get("count", 0)) != 1:
+            if not resultado.get("matched"):
                 log_event(
                     "browser_apply_radio_no_match",
-                    desired=desired,
-                    options=str(info.get("text", ""))[:120],
+                    desired=Path(value.strip()).name if value.strip() else "",
+                    options=str(resultado.get("options", ""))[:160],
                 )
                 return False
-            target.evaluate("(el) => { if (!el.checked) el.click(); return el.checked; }")
-            return True
+            return bool(resultado.get("clicked"))
         # Inputs customizados do LinkedIn são visualmente ocultos; check()
         # falha por "element is not visible". O clique via DOM é equivalente.
         target.evaluate(

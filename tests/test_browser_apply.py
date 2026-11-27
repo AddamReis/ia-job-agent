@@ -927,6 +927,39 @@ def test_fill_field_uses_select_option_for_selects() -> None:
     assert locator.selected == "Brasil (+55)"
 
 
+def test_fill_field_radio_aceita_valor_decidido_pelo_operador() -> None:
+    class Locator:
+        def __init__(self) -> None:
+            self.desejado = ""
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def evaluate(self, expression, wanted=""):
+            self.desejado = wanted
+            assert "input[type=radio]" in expression
+            assert "norm(o.value) === want" in expression
+            return {
+                "matched": True,
+                "clicked": True,
+                "options": "PJ:contractor | CLT:employee",
+            }
+
+    locator = Locator()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == '[data-agent-field="6"]'
+            return locator
+
+    assert fill_field(Page(), 6, "radio", "PJ") is True
+    assert locator.desejado == "PJ"
+
+
 def test_fill_field_select_aceita_rotulo_equivalente_do_linkedin() -> None:
     class Locator:
         def __init__(self) -> None:
