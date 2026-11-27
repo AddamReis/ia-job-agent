@@ -262,6 +262,26 @@ class ApplyObservation:
     already_applied: bool = False
 
 
+def _only_search_fields(snapshot: dict[str, Any]) -> bool:
+    """Indica que o snapshot só viu a busca global, não o formulário da vaga.
+
+    O LinkedIn monta o modal de Easy Apply depois do clique. Nesse intervalo o
+    DOM já expõe o campo "Pesquisar" da barra superior; tratá-lo como formulário
+    faz o agente avançar sem detectar o currículo já anexado no step seguinte.
+    """
+    campos = snapshot.get("fields") or []
+    if not campos:
+        return True
+    for bruto in campos:
+        texto = " ".join(
+            str(bruto.get(chave) or "")
+            for chave in ("label", "placeholder", "identifier", "autocomplete")
+        ).lower()
+        if not re.match(r"^\s*(?:pesquisar|search|buscar|pesquisa)\b", texto):
+            return False
+    return True
+
+
 def _value_from_source(profile: CandidateProfile, source: str) -> str:
     """Resolve um caminho aprendido (``profile.personal.email`` etc.).
 
@@ -403,13 +423,13 @@ class BrowserApplyAgent:
             self._ensure_not_blocked(page)
             self._ensure_no_credential_barrier(page)
             snapshot = snapshot_form(page)
-            # SPAs (Alignerr) montam os steps depois do JavaScript. Sem isso o
-            # agente lê um formulário vazio e tenta submeter antes dos campos.
-            if not snapshot.get("fields"):
+            # SPAs (Alignerr/LinkedIn) montam os steps depois do JavaScript. Sem
+            # isso o agente lê só a busca global e avança antes do modal abrir.
+            if _only_search_fields(snapshot):
                 for _tentativa in range(10):
                     page.wait_for_timeout(1000)
                     snapshot = snapshot_form(page)
-                    if snapshot.get("fields"):
+                    if not _only_search_fields(snapshot):
                         break
             if not resume_ready:
                 # Em candidaturas paginadas o campo de CV pode aparecer só no

@@ -10,6 +10,7 @@ from src.agents.browser_apply import (
     ApplyObservation,
     ApplyRoute,
     BrowserApplyAgent,
+    _only_search_fields,
     _value_from_source,
 )
 from src.core.config import Settings
@@ -261,6 +262,25 @@ def test_job_url_rejects_synthetic_identifier() -> None:
 def test_value_from_source_resolves_dict_keys() -> None:
     profile = CandidateProfile(documents={"resume": "C:/cv/addam.pdf"})
     assert _value_from_source(profile, "profile.documents.resume") == "C:/cv/addam.pdf"
+
+
+def test_only_search_fields_detecta_modal_ainda_nao_renderizado() -> None:
+    assert _only_search_fields({}) is True
+    assert _only_search_fields(
+        {
+            "fields": [
+                {
+                    "label": "Pesquisar",
+                    "placeholder": "Pesquisar",
+                    "identifier": "",
+                    "autocomplete": "off",
+                }
+            ]
+        }
+    ) is True
+    assert _only_search_fields(
+        {"fields": [{"label": "First name*", "identifier": "first-name"}]}
+    ) is False
 
 
 def test_value_from_source_aceita_origem_aprendida_com_prefixo_antigo() -> None:
