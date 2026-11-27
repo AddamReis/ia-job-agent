@@ -206,7 +206,9 @@ _BLOCK_RE = re.compile(
 # Selo de branding ("protected by reCAPTCHA"/"Protected by hCaptcha") não é
 # desafio: Greenhouse, Workday e iCIMS exibem esse rodapé em formulários normais.
 _BLOCK_BADGE_RE = re.compile(
-    r"protected by (?:re|h)?captcha", re.IGNORECASE
+    r"protected by (?:re|h)?captcha|"
+    r"recaptcha\.anchor\.[A-Za-z.]+\([^)]*\)",
+    re.IGNORECASE,
 )
 
 

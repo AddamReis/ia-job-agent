@@ -1344,6 +1344,9 @@ def test_confirmacao_de_envio_tem_precedencia_sobre_selo_de_verificacao() -> Non
 
 def test_recaptcha_branding_is_not_a_platform_challenge() -> None:
     assert not platform_block("Apply | protected by reCAPTCHA")
+    assert not platform_block(
+        'recaptcha.anchor.Main.init("[\\x22ainput\\x22,[\\x22bgdata\\x22,null]")'
+    )
     assert platform_block("Verificação de humano: confirme que você é humano")
 
 

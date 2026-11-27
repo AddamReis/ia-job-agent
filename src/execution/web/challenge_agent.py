@@ -160,6 +160,16 @@ class ChallengeAgent:
         except Exception:
             return {}
         for frame in list(getattr(page, "frames", []))[1:]:
+            url_frame = str(getattr(frame, "url", "") or "")
+            if _FRAME_ANCHOR_RE.search(url_frame):
+                continue
+            try:
+                elemento = frame.frame_element()
+                caixa = (elemento.bounding_box() or {}) if elemento is not None else {}
+            except Exception:
+                caixa = {}
+            if caixa and not self._has_area(caixa):
+                continue
             try:
                 extra = dict(frame.evaluate(_OBSERVE_JS) or {})
             except Exception:

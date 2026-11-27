@@ -152,6 +152,12 @@ _LANDING_STATE_JS = r"""
 }
 """
 
+# O anchor invisível do reCAPTCHA expõe texto de script (recaptcha.anchor.Main.init)
+# no innerText do iframe. Somá-lo ao texto da tela gera falso "captcha".
+_HIDDEN_CAPTCHA_FRAME_RE = re.compile(
+    r"recaptcha/enterprise/anchor|frame=checkbox|checkbox-invisible", re.I
+)
+
 
 def _is_login_page(url: str, text: str) -> bool:
     """Detecta tela de autenticação no portal externo."""
@@ -782,13 +788,33 @@ class BrowserApplyAgent:
         passwords = int(principal.get("passwords") or 0)
 
         for indice, frame in enumerate(list(getattr(page, "frames", []))[1:], start=1):
+            url_frame = str(frame.url or "")
+            if _HIDDEN_CAPTCHA_FRAME_RE.search(url_frame):
+                continue
+            try:
+                elemento = frame.frame_element()
+            except Exception:
+                elemento = None
+            if elemento is not None:
+                try:
+                    caixa = elemento.bounding_box() or {}
+                except Exception:
+                    caixa = {}
+                if caixa:
+                    try:
+                        if (
+                            float(caixa.get("width") or 0) <= 0
+                            or float(caixa.get("height") or 0) <= 0
+                        ):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
             try:
                 dados = frame.evaluate(_LANDING_STATE_JS) or {}
                 if not isinstance(dados, dict):
                     dados = {"text": str(dados)}
             except Exception:
                 continue
-            url_frame = str(frame.url or "")
             textos.append(str(dados.get("text") or ""))
             for item in dados.get("checkboxes") or []:
                 checkboxes.append(
