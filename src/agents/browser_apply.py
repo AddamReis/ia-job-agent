@@ -79,6 +79,13 @@ _EXTERNAL_APPLY_LABELS = (
     "Candidatar-se", "Candidatar", "Candidatura externa",
 )
 _APPLY_LABELS = _EASY_APPLY_LABELS + _EXTERNAL_APPLY_LABELS
+# O LinkedIn Easy Apply traz "Inserir cidade ou localidade" como campo opcional
+# de autocomplete. Escrever texto solto nele não seleciona um item real e o
+# portal barra o avanço sem mostrar erro de validação. Como a localidade já vem
+# do perfil nos campos obrigatórios (país/telefone), o opcional é ignorado.
+_OPTIONAL_LOCATION_RE = re.compile(
+    r"\b(?:cidade|city|localidade|location|localiza[cç][aã]o)\b", re.I
+)
 
 # Sinais de que o portal externo está pedindo login — nesse caso a candidatura
 # depende de ação humana (credenciais/2FA), nunca de automação.
@@ -269,6 +276,17 @@ def _only_search_fields(snapshot: dict[str, Any]) -> bool:
     DOM já expõe o campo "Pesquisar" da barra superior; tratá-lo como formulário
     faz o agente avançar sem detectar o currículo já anexado no step seguinte.
     """
+    # A última etapa do Easy Apply é só revisão: não há campos, mas o modal
+    # está aberto. Esperar 10s ali só atrasa o envio sem mudar o DOM.
+    texto = str(snapshot.get("text") or "")
+    if re.search(
+        r"candidate-se à empresa|candidate-se a empresa|"
+        r"\d+\s+de\s+\d+\s+p[aá]ginas|"
+        r"revise sua candidatura|review your application",
+        texto,
+        re.I,
+    ):
+        return False
     campos = snapshot.get("fields") or []
     if not campos:
         return True
@@ -2249,6 +2267,11 @@ class BrowserApplyAgent:
                         str(getattr(decisao, "reason", "") or "aceite exige decisão humana"),
                     )
             signature = field.signature()
+            if not field.required and _OPTIONAL_LOCATION_RE.search(
+                " ".join([str(field.label or ""), str(field.nearby_text or "")])
+            ):
+                log_event("browser_apply_optional_field_skipped", signature=signature)
+                continue
             learned = self.patterns.suggest(url, signature)
             value = ""
             source = ""

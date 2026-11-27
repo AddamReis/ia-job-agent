@@ -281,6 +281,12 @@ def test_only_search_fields_detecta_modal_ainda_nao_renderizado() -> None:
     assert _only_search_fields(
         {"fields": [{"label": "First name*", "identifier": "first-name"}]}
     ) is False
+    assert _only_search_fields(
+        {
+            "fields": [],
+            "text": "Candidate-se à empresa Jobot 3 de 3 páginas Revise sua candidatura",
+        }
+    ) is False
 
 
 def test_value_from_source_aceita_origem_aprendida_com_prefixo_antigo() -> None:
@@ -1016,6 +1022,55 @@ def test_optional_field_without_evidence_is_skipped(tmp_path) -> None:
         ],
     }
     assert agent._decide(snapshot) == []
+
+
+def test_optional_autocomplete_location_e_ignorado(tmp_path) -> None:
+    class ResolverSeletivo:
+        def resolve(self, field):
+            if field.label == "Inserir cidade ou localidade":
+                raise AssertionError("campo opcional de localidade não deve ser resolvido")
+            return AnswerDecision(
+                value="São Paulo",
+                source="profile.personal.location",
+                needs_human=False,
+            )
+
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = SitePatternStore(tmp_path / "patterns.json")
+    agent.resolver = ResolverSeletivo()
+    snapshot = {
+        "url": "https://www.linkedin.com/jobs/view/4493095721/",
+        "fields": [
+            {
+                "index": 0,
+                "label": "Inserir cidade ou localidade",
+                "type": "text",
+                "required": False,
+                "options": [],
+                "autocomplete": "off",
+                "identifier": "_r_1i_",
+                "placeholder": "",
+                "nearby_text": "",
+                "selector": "#city",
+            },
+            {
+                "index": 1,
+                "label": "City*",
+                "type": "text",
+                "required": True,
+                "options": [],
+                "autocomplete": "off",
+                "identifier": "_r_1j_",
+                "placeholder": "",
+                "nearby_text": "",
+                "selector": "#required-city",
+            },
+        ],
+    }
+
+    decisoes = agent._decide(snapshot)
+
+    assert [d.index for d in decisoes] == [1]
 
 
 def test_aprendido_location_usa_mapper_em_vez_de_bloquear_pais(tmp_path) -> None:
