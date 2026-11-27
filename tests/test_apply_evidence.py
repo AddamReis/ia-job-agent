@@ -10,6 +10,7 @@ import pytest
 import src.agents.browser_apply as apply_module
 import src.web.review_app as review
 from src.agents.browser_apply import (
+    ApplyObservation,
     BrowserApplyAgent,
     FillDecision,
     PreparedStep,
@@ -609,3 +610,70 @@ def test_pwa_renderiza_evidencias_no_detalhe() -> None:
     source = (review.STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert "Evidências do Apply" in source
     assert "/api/evidence/" in source
+
+
+def test_submit_returns_existing_application_instead_of_false_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Portal já candidatado é sucesso para o outbox, não 'envio não confirmado'."""
+    approval = ApprovalRequest(
+        id="aprovacao",
+        opportunity_id="vaga",
+        company="Acme",
+        title="Dev",
+        status="APPROVED",
+    )
+    job = JobOpportunity(
+        id="vaga",
+        external_id="123456789",
+        title="Dev",
+        company="Acme",
+        status=JobStatus.APPLYING,
+    )
+    snapshot = {
+        "url": "https://portal.test/apply",
+        "title": "Apply",
+        "text": "Ver solicitud",
+        "fields": [],
+    }
+
+    class Repo:
+        def __init__(self) -> None:
+            self.applications: list[Application] = []
+            self.updated: list[JobOpportunity] = []
+
+        def get_approval(self, approval_id: str):
+            return approval if approval_id == approval.id else None
+
+        def record_application(self, application: Application) -> None:
+            self.applications.append(application)
+
+        def update_job(self, atualizado: JobOpportunity) -> None:
+            self.updated.append(atualizado)
+
+    repo = Repo()
+    agent = object.__new__(BrowserApplyAgent)
+    agent.settings = Settings(root=tmp_path)
+    agent.profile = CandidateProfile()
+    agent.repo = repo
+    agent.bus = None
+    agent.browser = SimpleNamespace(close_tab=lambda _page: None)
+    pagina = FakePage()
+
+    monkeypatch.setattr(
+        agent,
+        "_open",
+        lambda _job: (pagina, snapshot, ApplyObservation(False, "Candidatar-se", True)),
+    )
+    monkeypatch.setattr(agent, "_record_easy_apply", lambda _job, _obs: None)
+    monkeypatch.setattr(agent, "_detect_already_applied", lambda _page, _snap: True)
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form", lambda _page: snapshot
+    )
+
+    application = agent.submit(job, approval, confirmed=True)
+
+    assert application is repo.applications[0]
+    assert application is not None
+    assert application.status == "SUBMITTED"
+    assert job.status is JobStatus.SUBMITTED

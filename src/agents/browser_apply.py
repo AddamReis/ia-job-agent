@@ -2583,15 +2583,17 @@ class BrowserApplyAgent:
             snapshot = snapshot_form(page)
             snapshot["job_text"] = job.description or ""
             if observation.already_applied or self._detect_already_applied(page, snapshot):
-                self._record_existing_application(job, snapshot, observation)
-                return None
+                # O portal confirmou candidatura existente: isso é um desfecho
+                # de sucesso para o outbox (a vaga já está SUBMITTED), não um
+                # "envio não confirmado". Devolver a aplicação evita que o
+                # worker transforme uma confirmação em evento FAILED.
+                return self._record_existing_application(job, snapshot, observation)
             if self._one_click_applied(page, snapshot):
-                self._record_existing_application(
+                return self._record_existing_application(
                     job,
                     snapshot,
                     ApplyObservation(False, "clique_unico_linkedin", True),
                 )
-                return None
             self._recheck_remote(job, snapshot)
 
             # Só campos que estavam na aprovação podem ser preenchidos. A
