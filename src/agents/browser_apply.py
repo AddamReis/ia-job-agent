@@ -239,8 +239,15 @@ class ApplyObservation:
 
 
 def _value_from_source(profile: CandidateProfile, source: str) -> str:
-    """Resolve um caminho aprendido (``profile.personal.email`` etc.)."""
-    if not source.startswith("profile."):
+    """Resolve um caminho aprendido (``profile.personal.email`` etc.).
+
+    Versões anteriores gravavam ``learned:profile....`` como origem; aceitar o
+    prefixo evita que um padrão aprendido com sucesso vire barreira humana.
+    """
+    origem = str(source or "")
+    while origem.startswith("learned:"):
+        origem = origem.split(":", 1)[1]
+    if not origem.startswith("profile."):
         return ""
     current: Any = profile
     for part in source.split(".")[1:]:
@@ -2195,11 +2202,23 @@ class BrowserApplyAgent:
             needs_human = False
             category = "general"
 
-            if learned and learned.get("source"):
-                value = _value_from_source(self.profile, str(learned["source"]))
+            valor_aprendido = ""
+            if (
+                learned
+                and learned.get("source")
+                and "location" not in str(learned["source"])
+            ):
+                # "location" aprendido é a string inteira ("São Paulo, SP,
+                # Brasil") e não serve para um <select> de código do país;
+                # o mapper extrai a parte correta com evidência do perfil.
+                valor_aprendido = _value_from_source(self.profile, str(learned["source"]))
+            if valor_aprendido:
+                value = valor_aprendido
                 source = f"learned:{learned['source']}"
-                needs_human = not value
+                needs_human = False
             else:
+                # Origem aprendida ausente/inválida não é evidência: consultar o
+                # mapper com o perfil atual em vez de bloquear o campo.
                 decision = self.resolver.resolve(field)
                 value = decision.value
                 source = decision.source

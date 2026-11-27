@@ -52,7 +52,10 @@ class SitePatternStore:
     ) -> None:
         """Registra/refuerça um padrão que levou a um envio bem-sucedido."""
         domain = domain_of(url)
-        if not domain or not signature or not selector or not source:
+        origem = str(source or "")
+        while origem.startswith("learned:"):
+            origem = origem.split(":", 1)[1]
+        if not domain or not signature or not selector or not origem:
             return
         data = self.load()
         sites = data.setdefault("sites", {})
@@ -61,7 +64,7 @@ class SitePatternStore:
         if success:
             current["successes"] = int(current.get("successes", 0)) + 1
             current["selector"] = selector
-            current["source"] = source
+            current["source"] = origem
         else:
             current["failures"] = int(current.get("failures", 0)) + 1
         fields[signature] = current

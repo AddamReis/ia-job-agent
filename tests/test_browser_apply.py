@@ -31,7 +31,13 @@ from src.execution.web.form_dom import (
     submission_state,
 )
 from src.execution.web.site_patterns import SitePatternStore
-from src.models.domain import ApprovalRequest, CandidateProfile, JobAnalysis, JobOpportunity
+from src.models.domain import (
+    ApprovalRequest,
+    CandidateProfile,
+    JobAnalysis,
+    JobOpportunity,
+    PersonalInfo,
+)
 from src.models.schemas import AnswerDecision, ConsentDecision, UiActionDecision
 
 
@@ -257,6 +263,11 @@ def test_value_from_source_resolves_dict_keys() -> None:
     assert _value_from_source(profile, "profile.documents.resume") == "C:/cv/addam.pdf"
 
 
+def test_value_from_source_aceita_origem_aprendida_com_prefixo_antigo() -> None:
+    profile = CandidateProfile(personal=PersonalInfo(first_name="Addam"))
+    assert _value_from_source(profile, "learned:profile.personal.first_name") == "Addam"
+
+
 def test_field_signature_drops_volatile_ids() -> None:
     assert FormField(label="Email*", identifier="_r_1g_").signature() == "email"
     assert FormField(label="Addam dos Reis cv.pdf", identifier="_r_1p_").signature() == "resume"
@@ -272,6 +283,15 @@ def test_site_pattern_store_keeps_only_selector_and_source(tmp_path) -> None:
     assert learned["selector"] == "#candidate-email"
     assert learned["successes"] == 1
     assert "pessoal" not in store.path.read_text(encoding="utf-8").lower()
+
+
+def test_site_pattern_store_normaliza_origem_aprendida(tmp_path) -> None:
+    store = SitePatternStore(tmp_path / "site_patterns.json")
+    url = "https://www.linkedin.com/jobs/view/4492884477/"
+    store.record(url, "first name", "#first-name", "learned:profile.personal.first_name")
+    learned = store.suggest(url, "first name")
+    assert learned is not None
+    assert learned["source"] == "profile.personal.first_name"
 
 
 def test_site_pattern_store_learns_ui_actions(tmp_path) -> None:
@@ -911,6 +931,51 @@ def test_optional_field_without_evidence_is_skipped(tmp_path) -> None:
         ],
     }
     assert agent._decide(snapshot) == []
+
+
+def test_aprendido_location_usa_mapper_em_vez_de_bloquear_pais(tmp_path) -> None:
+    agent = object.__new__(BrowserApplyAgent)
+    agent.patterns = SitePatternStore(tmp_path / "patterns.json")
+    url = "https://www.linkedin.com/jobs/view/4494652119/"
+    agent.patterns.record(
+        url,
+        "c digo do pa s",
+        "#country-code",
+        "learned:profile.personal.location",
+    )
+
+    class CountryResolver:
+        def resolve(self, field):
+            return AnswerDecision(
+                value="Brasil (+55)",
+                source="profile.personal.location",
+                needs_human=False,
+            )
+
+    agent.resolver = CountryResolver()
+    snapshot = {
+        "url": url,
+        "fields": [
+            {
+                "index": 0,
+                "label": "Código do país*",
+                "type": "select",
+                "required": True,
+                "options": ["Brasil (+55)", "Estados Unidos (+1)"],
+                "autocomplete": "",
+                "identifier": "_r_1i_",
+                "placeholder": "",
+                "nearby_text": "",
+                "selector": "#country-code",
+            }
+        ],
+    }
+
+    decisoes = agent._decide(snapshot)
+
+    assert len(decisoes) == 1
+    assert decisoes[0].value == "Brasil (+55)"
+    assert decisoes[0].source == "profile.personal.location"
 
 
 def test_optional_sensitive_field_without_evidence_blocks(tmp_path) -> None:
