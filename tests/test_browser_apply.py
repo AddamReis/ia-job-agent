@@ -95,11 +95,27 @@ class FakePage:
     def __init__(self, url: str) -> None:
         self.url = url
         self.context = SimpleNamespace(pages=[self])
+        self.feedback_dialog = False
+        self.feedback_persists = False
+        self.goto_count = 0
+        self.frames: list[object] = []
+
+    def goto(self, url: str, **_kwargs) -> None:
+        self.goto_count += 1
+        self.url = url
+        if not self.feedback_persists:
+            self.feedback_dialog = False
 
     def wait_for_timeout(self, _ms: int) -> None:
         return None
 
-    def evaluate(self, _script: str, *_args):
+    def evaluate(self, script: str, *_args):
+        if self.feedback_dialog and 'role="dialog"' in script:
+            return {
+                "url": self.url,
+                "text": "É irritante ou não é interessante Já vi este mesmo anúncio muitas vezes",
+                "buttons": [],
+            }
         return ""
 
 
@@ -225,6 +241,149 @@ def test_external_signup_opens_form_and_waits_for_login_check(
     assert observation.easy_apply is False
     assert snapshot["url"] == "https://example.com/apply"
     assert agent.browser.closed == []
+
+
+def test_feedback_dialog_is_reset_before_clicking_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _route_agent()
+    job = JobOpportunity(
+        external_id="4486844928", status=JobStatus.QUALIFIED, title="Engineer", company="Datadog"
+    )
+    page = FakePage("https://www.linkedin.com/jobs/view/4486844928")
+    page.feedback_dialog = True
+    agent.browser = FakeBrowser(page)
+    locator = FakeLocator("")
+    estado = {
+        "url": page.url,
+        "title": "Engineer | LinkedIn",
+        "text": "Candidatura simplificada",
+    }
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form", lambda _page: estado
+    )
+    monkeypatch.setattr(
+        BrowserApplyAgent,
+        "_apply_candidates",
+        staticmethod(lambda _page: [(100, "Candidatura simplificada", "text", locator)]),
+    )
+
+    agent._open(job)
+
+    assert page.goto_count == 1
+    assert page.feedback_dialog is False
+    assert locator.clicked is True
+
+
+def test_persistent_feedback_dialog_aborts_without_touching_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _route_agent()
+    job = JobOpportunity(
+        external_id="4486844928", status=JobStatus.APPLYING, title="Engineer", company="Datadog"
+    )
+    page = FakePage("https://www.linkedin.com/jobs/view/4486844928")
+    page.feedback_dialog = True
+    page.feedback_persists = True
+    agent.browser = FakeBrowser(page)
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda _page: {"url": page.url, "title": "Engineer | LinkedIn", "text": ""},
+    )
+
+    def nao_clicar(_page):
+        raise AssertionError("não deve clicar em opções de feedback/report")
+
+    monkeypatch.setattr(
+        BrowserApplyAgent, "_apply_candidates", staticmethod(nao_clicar)
+    )
+
+    with pytest.raises(ValidationError, match="diálogo de feedback"):
+        agent._open(job)
+    assert page.goto_count == 1
+
+
+def test_walk_steps_aborts_on_feedback_dialog_without_clicking_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _route_agent()
+    job = JobOpportunity(
+        external_id="4486844928", status=JobStatus.APPLYING, title="Engineer", company="Datadog"
+    )
+    page = FakePage("https://www.linkedin.com/jobs/view/4486844928")
+    page.feedback_dialog = True
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form",
+        lambda _page: {
+            "url": page.url,
+            "title": "Engineer | LinkedIn",
+            "text": "É irritante ou não é interessante",
+            "fields": [],
+        },
+    )
+
+    def nao_avancar(_page, _label):
+        raise AssertionError("não deve avançar dentro do diálogo de feedback")
+
+    monkeypatch.setattr("src.agents.browser_apply.click_next", nao_avancar)
+
+    with pytest.raises(ValidationError, match="feedback"):
+        agent._walk_steps(page, job)
+
+
+def test_application_frame_ignores_captcha_and_finds_real_form() -> None:
+    page = FakePage("https://careers.datadoghq.com/detail/4599111")
+    captcha = SimpleNamespace(
+        url="https://www.google.com/recaptcha/enterprise/anchor?frame=checkbox",
+        evaluate=lambda _script: {"has_form": True},
+    )
+    formulario = SimpleNamespace(
+        url="https://job-boards.greenhouse.io/embed/job_app?token=4599111",
+        evaluate=lambda _script: {"has_form": True, "has_file": True},
+    )
+    page.frames = [page, captcha, formulario]
+
+    assert BrowserApplyAgent._application_frame_url(page) == formulario.url
+
+
+def test_iframe_form_is_opened_before_reading_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _route_agent()
+    page = FakePage("https://careers.datadoghq.com/detail/4599111")
+    formulario = SimpleNamespace(
+        url="https://job-boards.greenhouse.io/embed/job_app?token=4599111",
+        evaluate=lambda _script: {"has_form": True, "has_file": True},
+    )
+    page.frames = [page, formulario]
+    monkeypatch.setattr(agent, "_ensure_external_entry", lambda pagina: (pagina, {}))
+    monkeypatch.setattr(
+        agent,
+        "_observe_screen",
+        lambda _pagina: {
+            "url": page.url,
+            "has_form": True,
+            "has_file": False,
+            "blocked": False,
+            "login": False,
+        },
+    )
+    estados = iter(
+        [
+            {"url": page.url, "fields": []},
+            {"url": formulario.url, "fields": [{"index": 0}]},
+        ]
+    )
+    monkeypatch.setattr(
+        "src.agents.browser_apply.snapshot_form", lambda _pagina: next(estados)
+    )
+    monkeypatch.setattr(agent, "_ensure_no_login", lambda _pagina, _snapshot: None)
+
+    resultado = agent._advance_external_landing(page)
+
+    assert resultado is page
+    assert page.goto_count == 1
+    assert page.url == formulario.url
 
 
 def test_easy_apply_is_not_recorded_for_rejected_job() -> None:

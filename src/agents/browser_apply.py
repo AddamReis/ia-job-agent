@@ -39,6 +39,7 @@ from ..execution.web.form_dom import (
     credential_barrier,
     ensure_resume_uploaded,
     fill_field,
+    feedback_dialog_text,
     is_experience_step,
     next_step_label,
     peek_combobox_options,
@@ -449,6 +450,15 @@ class BrowserApplyAgent:
                     snapshot = snapshot_form(page)
                     if not _only_search_fields(snapshot):
                         break
+            if domain_of(str(snapshot.get("url", "") or "")) == "linkedin.com":
+                if feedback_dialog_text(page):
+                    log_event(
+                        "browser_apply_feedback_dialog_aborted",
+                        external_id=job.external_id,
+                    )
+                    raise ValidationError(
+                        "diálogo de feedback do LinkedIn interrompeu a candidatura"
+                    )
             if not resume_ready:
                 # Em candidaturas paginadas o campo de CV pode aparecer só no
                 # step 2/3. Tentar em cada step evita reprovar o envio antes da
@@ -627,6 +637,36 @@ class BrowserApplyAgent:
         # CTA externo sem destino identificável: não inventar cadastro.
         return ApplyRoute.EXTERNAL_SIGNUP
 
+    def _reset_feedback_dialog(self, page: Any, job: JobOpportunity) -> bool:
+        """Recarrega aba do LinkedIn presa no diálogo de feedback/report.
+
+        O Chrome reaproveita abas já carregadas da mesma vaga. Se um ciclo
+        anterior parou no diálogo de feedback, a URL continua sendo a da vaga e
+        o agente pode confundir "É irritante ou não é interessante" com campo do
+        formulário. Nenhuma opção do diálogo é clicada: apenas recarregamos a
+        página e, se o diálogo insistir, abortamos sem interagir.
+        """
+        if not feedback_dialog_text(page):
+            return False
+        log_event("browser_apply_feedback_dialog_reset", external_id=job.external_id)
+        try:
+            page.goto(
+                self.job_url(job),
+                wait_until="domcontentloaded",
+                timeout=self.settings.browser.timeout_ms,
+            )
+            page.wait_for_timeout(2000)
+        except Exception as exc:
+            raise ValidationError(
+                "aba da vaga presa em diálogo de feedback; recarga falhou"
+            ) from exc
+        if feedback_dialog_text(page):
+            log_event(
+                "browser_apply_feedback_dialog_persisted", external_id=job.external_id
+            )
+            raise ValidationError("diálogo de feedback do LinkedIn bloqueia a candidatura")
+        return True
+
     def _open(
         self, job: JobOpportunity
     ) -> tuple[Any, dict[str, Any], ApplyObservation]:
@@ -637,6 +677,9 @@ class BrowserApplyAgent:
         """
         page = self.browser.open_tab(self.job_url(job))
         snapshot = snapshot_form(page)
+        if domain_of(str(snapshot.get("url", "") or "")) == "linkedin.com":
+            if self._reset_feedback_dialog(page, job):
+                snapshot = snapshot_form(page)
         if domain_of(snapshot.get("url", "")) != "linkedin.com":
             observation = ApplyObservation(False, "portal_externo")
             if self._detect_already_applied(page, snapshot):
@@ -1012,6 +1055,33 @@ class BrowserApplyAgent:
             return frames[indice] or page
         except Exception:
             return page
+
+    @staticmethod
+    def _application_frame_url(page: Any) -> str:
+        """URL de um iframe que contém o formulário de candidatura.
+
+        Landing Greenhouse embeda o formulário (``job_app``) dentro da página
+        da empresa. ``snapshot_form`` lê só o documento principal; sem entrar no
+        formulário o agente reporta "currículo não foi anexado" mesmo com o
+        campo ``#resume`` visível no iframe.
+        """
+        for frame in list(getattr(page, "frames", None) or [])[1:]:
+            url = str(getattr(frame, "url", "") or "")
+            if not url or _HIDDEN_CAPTCHA_FRAME_RE.search(url):
+                continue
+            if not re.search(
+                r"job_app|/apply|application|greenhouse\.io|workday|icims", url, re.I
+            ):
+                continue
+            try:
+                estado = frame.evaluate(_LANDING_STATE_JS) or {}
+            except Exception:
+                continue
+            if isinstance(estado, dict) and (
+                estado.get("has_form") or estado.get("has_file")
+            ):
+                return url
+        return ""
 
     @staticmethod
     def _click_by_label(frame: Any, label: str) -> bool:
@@ -1450,6 +1520,22 @@ class BrowserApplyAgent:
         if status.get("blocked"):
             raise BlockedByPlatformError("verificação/CAPTCHA após abrir o formulário")
         snapshot = snapshot_form(page)
+        if not (snapshot.get("fields") or []):
+            frame_url = self._application_frame_url(page)
+            if frame_url:
+                log_event("browser_apply_external_frame_entered", url=frame_url[:160])
+                try:
+                    page.goto(
+                        frame_url,
+                        wait_until="domcontentloaded",
+                        timeout=self.settings.browser.timeout_ms,
+                    )
+                    page.wait_for_timeout(2000)
+                except Exception as exc:
+                    raise ValidationError(
+                        "formulário em iframe não pôde ser aberto"
+                    ) from exc
+                snapshot = snapshot_form(page)
         self._ensure_no_login(page, snapshot)
         if decidido is not None and acao:
             source = str(getattr(decidido, "source", "") or "llm")[:40]

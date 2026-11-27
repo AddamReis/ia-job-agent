@@ -428,6 +428,32 @@ _DIALOG_STATE_JS = r"""
   };
 }
 """
+# Uma aba reaproveitada pode continuar na mesma URL da vaga com o diálogo de
+# feedback/report do LinkedIn aberto. As opções ("É irritante...", "Já vi este
+# mesmo anúncio...") não são campos de candidatura: nenhuma dela pode ser
+# clicada. Este reconhecedor só lê o diálogo visível.
+_FEEDBACK_DIALOG_RE = re.compile(
+    r"irritante ou n[ãa]o (?:[ée]|e) interessante|"
+    r"j[áa] vi este mesmo an[úu]ncio|"
+    r"(?:i(?:'|\u2019)?ve|have) seen this (?:same )?(?:job |job posting |posting |ad )?(?:many times|multiple times|before)|"
+    r"report (?:this )?(?:job|post|ad)|"
+    r"denunciar (?:esta |este )?(?:vaga|an[úu]ncio)",
+    re.IGNORECASE,
+)
+
+
+def feedback_dialog_text(page: Any) -> str:
+    """Texto do diálogo de feedback/report, sem interagir com ele."""
+    try:
+        state = page.evaluate(_DIALOG_STATE_JS) or {}
+    except Exception:
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    texto = str(state.get("text") or "")
+    return texto if _FEEDBACK_DIALOG_RE.search(texto) else ""
+
+
 _EXPERIENCE_CARD_JS = r"""
 (btn) => {
   const root = btn.closest('li, article, section, [role="group"]')
