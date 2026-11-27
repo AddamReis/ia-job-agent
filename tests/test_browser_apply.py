@@ -1326,6 +1326,22 @@ def test_verified_employer_badge_is_not_captcha_block() -> None:
     assert submission_state(Pagina()) != "blocked"
 
 
+def test_confirmacao_de_envio_tem_precedencia_sobre_selo_de_verificacao() -> None:
+    class Pagina:
+        url = "https://www.linkedin.com/jobs/view/4494618968/"
+
+        @property
+        def locator(self):
+            return lambda _selector: SimpleNamespace(
+                inner_text=lambda: (
+                    "Status da candidatura\nCandidatura enviada agora\n"
+                    "Verificação de segurança\nprotected by reCAPTCHA"
+                )
+            )
+
+    assert submission_state(Pagina()) == "submitted"
+
+
 def test_recaptcha_branding_is_not_a_platform_challenge() -> None:
     assert not platform_block("Apply | protected by reCAPTCHA")
     assert platform_block("Verificação de humano: confirme que você é humano")

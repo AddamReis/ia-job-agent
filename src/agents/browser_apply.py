@@ -296,16 +296,27 @@ class BrowserApplyAgent:
         seguro = re.sub(r"[^A-Za-z0-9_-]", "_", job.id or "sem-id")[:64]
         return Path("data/evidence") / seguro
 
+    @staticmethod
+    def _already_submitted(page: Any) -> bool:
+        """Confirmação visível vale mais que selo de segurança na mesma tela."""
+        try:
+            return submission_state(page) == "submitted"
+        except Exception:
+            return False
+
     def _resolve_challenge(self, page: Any) -> bool:
         """Skill genérica: tenta CAPTCHA/senha/MFA antes de declarar bloqueio."""
         skill = getattr(self, "challenges", None)
         if skill is None:
             return False
+        if self._already_submitted(page):
+            log_event("challenge_skipped_already_submitted")
+            return True
         ativo = getattr(self, "_active_job", None)
         evidencia = self._evidence_dir(ativo) if ativo is not None else None
         try:
-            # O chamador já viu uma barreira: mesmo sem sinal estruturado, a
-            # visão deve receber a captura antes de declarar bloqueio.
+            # O chamador já viu uma barreira: a visão decide, mas a skill exige
+            # um alvo visível para não tratar formulário/loading como CAPTCHA.
             return skill.solve(page, evidence_dir=evidencia, force=True)
         except Exception as exc:
             log_event(
@@ -1178,9 +1189,11 @@ class BrowserApplyAgent:
         def login_sem_senha() -> bool:
             return bool(estado.get("login")) and not int(estado.get("passwords") or 0)
 
-        if estado.get("blocked") and not login_sem_senha():
+        if estado.get("blocked") and not login_sem_senha() and not self._already_submitted(page):
             self._resolve_challenge(page)
             estado = self._observe_screen(page)
+        if self._already_submitted(page):
+            return page, snapshot or {}
         if estado.get("blocked") and not login_sem_senha():
             raise BlockedByPlatformError("verificação/CAPTCHA na entrada do portal")
         settings = getattr(self, "settings", None)
@@ -2490,6 +2503,9 @@ class BrowserApplyAgent:
                     raise ValidationError("botão de envio não encontrado no formulário")
                 page.wait_for_timeout(2500)
                 state = submission_state(page)
+                if state == "blocked":
+                    self._resolve_challenge(page)
+                    state = submission_state(page)
                 if state == "blocked":
                     raise BlockedByPlatformError("verificação/CAPTCHA durante a candidatura")
                 if state != "submitted":

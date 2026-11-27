@@ -1230,10 +1230,13 @@ def submission_state(page: Any) -> str:
         text = (page.locator("body").inner_text() or "").lower()
     except Exception:
         return "unknown"
-    if platform_block(text):
-        return "blocked"
+    # A confirmação do portal tem precedência: páginas como o LinkedIn mantêm
+    # o selo "Verificação realizada"/widget de segurança mesmo depois de
+    # "Candidatura enviada". Um envio confirmado nunca é reclassificado erro.
     if any(mark in text for mark in _CONFIRM_MARKS):
         return "submitted"
+    if platform_block(text):
+        return "blocked"
     # Portais que confirmam só por URL: exigimos também texto de candidatura,
     # para não confundir "/complete" de cadastro com envio de formulário.
     url = str(getattr(page, "url", "") or "")

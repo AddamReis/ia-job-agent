@@ -305,3 +305,46 @@ def test_captura_do_desafio_faz_fallback_para_clip_do_frame() -> None:
 
     assert payload == b"jpeg-recortado"
     assert pagina.clips == [{"x": 20.0, "y": 30.0, "width": 320.0, "height": 240.0}]
+
+
+def test_resposta_unknown_mesmo_com_confianca_alta_nao_e_aplicada() -> None:
+    pagina = FakePage([_obs(captcha=True)] * 6)
+    llm = FakeLLM(CaptchaSolution(kind="unknown", confidence=1.0))
+    agente = ChallengeAgent(llm, FakeCredentials())
+
+    assert agente.solve(pagina, force=True) is False
+    assert not pagina.locators
+    assert pagina.mouse.clicks == []
+    assert llm.mensagens  # a visão foi usada; a resposta é que não era ação
+
+
+def test_anchor_invisivel_do_recaptcha_nao_e_desafio() -> None:
+    anchor = FakeFrame(
+        "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=abc",
+        FakeElementHandle({"x": 0, "y": 0, "width": 0, "height": 0}, {}),
+    )
+    pagina = FakePage([_obs()], [anchor])
+    pagina.frames.insert(0, pagina)
+    agente = ChallengeAgent(FakeLLM(CaptchaSolution()), FakeCredentials())
+
+    assert agente._captcha_frames(pagina) == []
+    assert agente.solve(pagina, force=True) is False
+
+
+def test_force_em_formulario_sem_desafio_visivel_nao_chama_a_visao() -> None:
+    pagina = FakePage([_obs()] * 4)
+    llm = FakeLLM(CaptchaSolution(kind="text", answer="INVENTADO", confidence=0.99))
+    agente = ChallengeAgent(llm, FakeCredentials())
+
+    assert agente.solve(pagina, force=True) is False
+    assert llm.mensagens == []
+    assert not pagina.locators
+
+
+def test_resposta_sem_pontos_para_captcha_de_imagem_e_rejeitada() -> None:
+    pagina = FakePage([_obs(captcha=True)] * 6)
+    llm = FakeLLM(CaptchaSolution(kind="image", points=[], confidence=0.95))
+    agente = ChallengeAgent(llm, FakeCredentials())
+
+    assert agente.solve(pagina) is False
+    assert pagina.mouse.clicks == []
