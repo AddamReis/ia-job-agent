@@ -195,6 +195,37 @@ def test_click_next_only_uses_advance_labels() -> None:
     assert click_next(page, "Submit") is False
 
 
+def test_next_step_label_prefers_visible_review_over_stale_advance() -> None:
+    class Locator:
+        @property
+        def first(self):
+            return self
+
+        def count(self) -> int:
+            return 1
+
+        def is_visible(self) -> bool:
+            return False
+
+        def click(self) -> None:
+            raise AssertionError("botão fantasma não deve ser clicado")
+
+    class Page:
+        def evaluate(self, _expression):
+            return [
+                {"text": "Voltar", "aria": "", "disabled": False},
+                {"text": "Avaliar", "aria": "", "disabled": False},
+            ]
+
+        def get_by_role(self, _role: str, _name):
+            return Locator()
+
+        def locator(self, _selector: str):
+            return Locator()
+
+    assert next_step_label(Page()) == "Avaliar"
+
+
 def test_walk_steps_recomputes_all_steps_for_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

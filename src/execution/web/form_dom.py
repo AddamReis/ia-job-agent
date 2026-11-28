@@ -1237,6 +1237,29 @@ def click_submit(page: Any, label: str = "") -> bool:
 
 def next_step_label(page: Any) -> str:
     """Rótulo de avanço de step, sem confundir com o Submit final."""
+    # O Easy Apply do LinkedIn mantém botões de steps anteriores no DOM. Consultar
+    # primeiro os botões realmente visíveis evita escolher um "Avançar" fantasma
+    # quando a etapa atual já mostra apenas "Avaliar".
+    try:
+        visiveis = visible_buttons(page)
+    except Exception:
+        visiveis = []
+    for text in _NEXT_LABELS:
+        lowered = text.lower()
+        if any(mark in lowered for mark in _SUBMIT_WORDS):
+            continue
+        padrao = re.compile(rf"\b{re.escape(text)}\b", re.I)
+        if any(
+            not botao.get("disabled")
+            and padrao.search(
+                " ".join(
+                    str(botao.get(chave) or "")
+                    for chave in ("text", "aria")
+                )
+            )
+            for botao in visiveis
+        ):
+            return text
     for text in _NEXT_LABELS:
         lowered = text.lower()
         if any(mark in lowered for mark in _SUBMIT_WORDS):
