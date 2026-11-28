@@ -1296,7 +1296,14 @@ def click_next(page: Any, label: str = "") -> bool:
             locator = make_locator()
             if locator.count() == 0:
                 continue
-            locator.first.click()
+            alvo = locator.first
+            try:
+                alvo.click()
+            except Exception:
+                # Banner de cookies/overlays pode interceptar o clique real.
+                # O botão já foi confirmado como visível; o clique via DOM é
+                # equivalente e nunca é usado para Submit.
+                alvo.evaluate("el => el.click()")
             log_event("browser_apply_step_advanced", label=text)
             return True
         except Exception:

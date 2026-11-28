@@ -195,6 +195,41 @@ def test_click_next_only_uses_advance_labels() -> None:
     assert click_next(page, "Submit") is False
 
 
+def test_click_next_uses_dom_click_when_overlay_intercepts() -> None:
+    class Locator:
+        def __init__(self) -> None:
+            self.dom_clicked = False
+
+        @property
+        def first(self):
+            return self
+
+        def count(self) -> int:
+            return 1
+
+        def click(self) -> None:
+            raise RuntimeError("overlay interceptou o clique")
+
+        def evaluate(self, expression):
+            assert "el.click()" in expression
+            self.dom_clicked = True
+
+    locator = Locator()
+
+    class Page:
+        def evaluate(self, _expression):
+            return [{"text": "Next", "aria": "Go to next step", "disabled": False}]
+
+        def get_by_role(self, _role: str, _name):
+            return locator
+
+        def locator(self, _selector: str):
+            return locator
+
+    assert click_next(Page()) is True
+    assert locator.dom_clicked is True
+
+
 def test_next_step_label_prefers_visible_review_over_stale_advance() -> None:
     class Locator:
         @property
