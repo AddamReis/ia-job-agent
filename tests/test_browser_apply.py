@@ -1086,6 +1086,31 @@ def test_fill_field_uses_select_option_for_selects() -> None:
     assert locator.selected == "Brasil (+55)"
 
 
+def test_fill_field_rejeita_texto_em_campo_numerico() -> None:
+    class Locator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def get_attribute(self, name):
+            assert name == "type"
+            return "number"
+
+        def fill(self, _value):
+            raise AssertionError("texto não deve ser preenchido em input[type=number]")
+
+    class Page:
+        def locator(self, selector):
+            assert selector == '[data-agent-field="4"]'
+            return Locator()
+
+    with pytest.raises(HumanActionRequired, match="numérico"):
+        fill_field(Page(), 4, "text", "A combinar")
+
+
 def test_fill_field_radio_aceita_valor_decidido_pelo_operador() -> None:
     class Locator:
         def __init__(self) -> None:

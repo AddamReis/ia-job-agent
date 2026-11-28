@@ -1172,7 +1172,34 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
                 return False
         return False
     else:
-        target.fill(value)
+        try:
+            tipo = str(target.get_attribute("type") or "").lower()
+        except Exception:
+            tipo = ""
+        candidato = str(value or "").strip()
+        if tipo == "number":
+            # Nunca transformar "A combinar" (ou qualquer texto) em número:
+            # isso inventaria uma resposta humana num campo obrigatório.
+            limpo = (
+                candidato.replace("R$", "")
+                .replace("$", "")
+                .replace(" ", "")
+                .replace(",", ".")
+                .strip()
+            )
+            if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", limpo):
+                log_event(
+                    "browser_apply_number_value_rejected",
+                    index=index,
+                    reason="valor nao numerico",
+                )
+                raise HumanActionRequired(
+                    "campo numérico",
+                    "o portal exige valor numérico; a evidência do perfil não é numérica",
+                )
+            target.fill(limpo)
+            return True
+        target.fill(candidato)
     return True
 
 
