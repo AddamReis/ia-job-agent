@@ -1028,15 +1028,37 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
                     : [el];
                   const norm = s => String(s || '').toLowerCase().replace(/\W+/g, ' ').trim();
                   const want = norm(wanted);
-                  const opts = group.map(r => {
-                    const label = r.getAttribute('aria-label') || r.getAttribute('title') || '';
-                    const parentText = r.parentElement ? (r.parentElement.innerText || '') : '';
-                    return {
-                      el: r,
-                      value: String(r.value || ''),
-                      text: norm(label + ' ' + parentText),
-                    };
-                  });
+                  // O aria-label do grupo é a pergunta inteira; o rótulo da
+                  // opção ("Yes"/"No") mora em um texto vizinho. Preferir o
+                  // texto curto visível evita casar "Yes" com a pergunta.
+                  const textoCurto = (r) => {
+                    const candidatos = [];
+                    const rotulo = r.getAttribute('aria-label') || r.getAttribute('title') || '';
+                    if (r.id) {
+                      const associado = document.querySelector(
+                        'label[for=' + JSON.stringify(r.id) + ']'
+                      );
+                      if (associado) candidatos.push(associado.innerText || '');
+                    }
+                    const proprio = r.closest ? r.closest('label') : null;
+                    if (proprio) candidatos.push(proprio.innerText || '');
+                    let node = r.parentElement;
+                    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+                      candidatos.push(node.innerText || '');
+                    }
+                    const uteis = candidatos
+                      .map(t => String(t || '').replace(/\s+/g, ' ').trim())
+                      .filter(t => t && t.length <= 200 && !/[?]/.test(t));
+                    const binario = uteis.find(t =>
+                      /^(yes|no|sim|não|nao|true|false)$/i.test(t)
+                    );
+                    return binario || uteis.sort((a, b) => a.length - b.length)[0] || rotulo;
+                  };
+                  const opts = group.map(r => ({
+                    el: r,
+                    value: String(r.value || ''),
+                    text: norm(textoCurto(r)),
+                  }));
                   const describe = () => opts
                     .map(o => (o.value + ':' + o.text).slice(0, 90)).join(' | ');
                   if (group.length === 1) {

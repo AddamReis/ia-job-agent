@@ -1102,6 +1102,7 @@ def test_fill_field_radio_aceita_valor_decidido_pelo_operador() -> None:
             self.desejado = wanted
             assert "input[type=radio]" in expression
             assert "norm(o.value) === want" in expression
+            assert "textoCurto" in expression
             return {
                 "matched": True,
                 "clicked": True,
@@ -1135,6 +1136,7 @@ def test_fill_field_radio_yes_procura_opcao_no_grupo_inteiro() -> None:
             self.desejado = wanted
             assert "input[type=radio]" in expression
             assert "norm(o.value) === want" in expression
+            assert "textoCurto" in expression
             return {
                 "matched": True,
                 "clicked": True,
