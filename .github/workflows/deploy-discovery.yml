@@ -21,9 +21,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Remover discovery legado fora do compose
+        run: |
+          set -euo pipefail
+          name=ia-job-agent-discovery
+          labels=$(docker inspect "$name" --format '{{json .Config.Labels}}' 2>/dev/null || true)
+          case "$labels" in
+            *com.docker.compose.config-hash*) ;;
+            *)
+              if [ -n "$labels" ]; then
+                echo "Removendo container legado $name (sem labels de compose)"
+                docker rm -f "$name"
+              fi
+              ;;
+          esac
+
       - name: Sincronizar código e subir robô de dados
         env:
           DEPLOY_PATH: /home/addam/ia-job-agent
+          COMPOSE_PROJECT_NAME: deploy
         run: |
           set -euo pipefail
           mkdir -p "$DEPLOY_PATH/data"
@@ -32,7 +48,7 @@ jobs:
             --exclude='.env' --exclude='__pycache__' --exclude='.pytest_cache' \
             "$GITHUB_WORKSPACE/" "$DEPLOY_PATH/"
           cd "$DEPLOY_PATH"
-          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml up -d --build --wait
-          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml ps
-          docker compose --env-file .env -f deploy/postgres.yaml -f deploy/discovery.yaml exec -T discovery \
+          docker compose --env-file .env -p "$COMPOSE_PROJECT_NAME" -f deploy/postgres.yaml -f deploy/discovery.yaml up -d --build --wait
+          docker compose --env-file .env -p "$COMPOSE_PROJECT_NAME" -f deploy/postgres.yaml -f deploy/discovery.yaml ps
+          docker compose --env-file .env -p "$COMPOSE_PROJECT_NAME" -f deploy/postgres.yaml -f deploy/discovery.yaml exec -T discovery \
             python -c "from src.core.config import Settings; from src.storage.database import Repository; s=Settings.load(); r=Repository(); print('database=', r.engine.url.render_as_string(hide_password=True)); print('browser=', repr(s.browser.source), 'slots=', s.discovery_schedule.slots)"
