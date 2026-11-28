@@ -169,3 +169,32 @@ def test_known_job_does_not_pay_another_offer_request(tmp_path) -> None:
 
     assert agent.run(reference_time=NOW, cutoff=NOW - timedelta(hours=6)) == 0
     assert fake.offer_calls == []
+
+
+def test_gone_offer_is_skipped_without_aborting_the_source(tmp_path) -> None:
+    from dataclasses import replace
+
+    repo = Repository(tmp_path / "agent.db")
+    gone = replace(_card(), id="6b0a2ee51870ab7f4cd47b7e", url="https://jobgether.com/offer/6b0a2ee51870ab7f4cd47b7e-netsuite")
+    usable = replace(
+        gone,
+        id="6b0a20ce1870ab7f4cd42c89",
+        title="Senior/Staff Software Engineer, Security",
+        url="https://jobgether.com/offer/6b0a20ce1870ab7f4cd42c89-security",
+    )
+
+    class FlakySource(FakeSource):
+        def offer(self, url):
+            if url == gone.url:
+                self.offer_calls.append(url)
+                raise RuntimeError("Client error 410 Gone")
+            return super().offer(url)
+
+    fake = FlakySource(parse_offer(OFFER_HTML), cards=[gone, usable])
+    agent = JobgetherResearchAgent(repo, _settings(tmp_path), source=fake)
+
+    assert agent.run(reference_time=NOW, cutoff=NOW - timedelta(hours=6)) == 1
+    assert fake.offer_calls == [gone.url, usable.url]
+    jobs = [job for job in repo.list_jobs() if job.source == "jobgether"]
+    assert len(jobs) == 1
+    assert jobs[0].external_id == usable.id

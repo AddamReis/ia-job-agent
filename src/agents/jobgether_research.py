@@ -83,7 +83,7 @@ class JobgetherResearchAgent:
         seen: set[str] = set()
         saved = 0
         details = 0
-        discarded = {"off_stack": 0, "suppressed": 0, "outside_window": 0, "known": 0, "no_description": 0, "not_remote": 0}
+        discarded = {"off_stack": 0, "suppressed": 0, "outside_window": 0, "known": 0, "offer_failed": 0, "no_description": 0, "not_remote": 0}
 
         try:
             for keyword in self.cfg.keywords:
@@ -140,7 +140,19 @@ class JobgetherResearchAgent:
                                 log_event("jobgether_detail_budget_reached", limit=self.cfg.max_details_per_slot)
                                 continue
 
-                            detail = self.source.offer(card.url)
+                            try:
+                                # Offer pode ter sido removido (410) entre a
+                                # listagem e o detalhe. Uma vaga caducada não
+                                # pode abortar toda a varredura da fonte.
+                                detail = self.source.offer(card.url)
+                            except Exception as exc:
+                                discarded["offer_failed"] += 1
+                                log_event(
+                                    "jobgether_offer_failed",
+                                    external_id=card.id,
+                                    error=str(exc),
+                                )
+                                continue
                             details += 1
                             if not detail.description:
                                 discarded["no_description"] += 1
