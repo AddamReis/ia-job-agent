@@ -11,6 +11,18 @@ from .field import FormField
 _ENGLISH_YEARS = re.compile(
     r"\byears of (?:relevant )?experience\b|\byears experience\b", re.IGNORECASE
 )
+# Perguntas "at least 3 years?" são sim/não; o número do perfil não é valor de
+# radio (todos os radios do grupo têm value="on"). A resposta é derivada do
+# proprio perfil, sem inventar evidência humana.
+_YEARS_THRESHOLD = re.compile(
+    r"(?P<operator>at least|minimum|min\.?|more than|over|>=|>)\s*(?P<limit>\d{1,2})"
+    r"|(?P<plus>\d{1,2})\s*(?:\+|\bor more\b)",
+    re.IGNORECASE,
+)
+_THRESHOLD_QUESTION = re.compile(
+    r"at least|minimum|min\.?|more than|over|>=|>|\d{1,2}\s*(?:\+|\bor more\b)",
+    re.IGNORECASE,
+)
 _COUNTRY_ALIASES = {
     "brasil": "Brazil",
     "estados unidos": "United States",
@@ -120,6 +132,54 @@ def _birth_part(profile: CandidateProfile, parte: str) -> str:
     return ""
 
 
+def _years_threshold_answer(
+    field: FormField, profile: CandidateProfile, context: str
+) -> tuple[str, str] | None:
+    """Converte anos do perfil em sim/não para perguntas com limite.
+
+    "Do you have at least 3 years...?" é uma pergunta binária: enviar ``7``
+    como valor de rádio é impreciso (o grupo costuma ter ``value="on"``). A
+    comparação usa somente o número já persistido no perfil e o limite escrito
+    na própria pergunta — nenhuma resposta é inventada.
+    """
+    if field.field_type not in {"radio", "checkbox"}:
+        return None
+    if not (
+        _ENGLISH_YEARS.search(context)
+        or re.search(r"experience years|anos de experi", context, re.IGNORECASE)
+    ):
+        return None
+    if not _THRESHOLD_QUESTION.search(context):
+        return None
+    match = _YEARS_THRESHOLD.search(context)
+    if not match:
+        return None
+    limite_raw = match.group("limit") or match.group("plus")
+    if not limite_raw:
+        return None
+    atual = _get_path(profile, "years_experience")
+    try:
+        anos = int(atual)
+        limite = int(limite_raw)
+    except (TypeError, ValueError):
+        return None
+    operador = (match.group("operator") or "").lower()
+    estrito = (
+        operador.startswith("more than")
+        or operador.startswith("over")
+        or operador == ">"
+    )
+    aprovado = anos > limite if estrito else anos >= limite
+    rotulo = "Yes" if aprovado else "No"
+    for opcao in field.options:
+        texto = str(opcao or "").strip()
+        if aprovado and re.fullmatch(r"yes|sim|true", texto, re.IGNORECASE):
+            return texto, "profile.years_experience:threshold"
+        if not aprovado and re.fullmatch(r"no|n[aã]o|false", texto, re.IGNORECASE):
+            return texto, "profile.years_experience:threshold"
+    return rotulo, "profile.years_experience:threshold"
+
+
 def human_evidence(profile: CandidateProfile, text: str) -> str:
     """Resposta cadastrada explicitamente pelo operador para tema sensível.
 
@@ -195,6 +255,7 @@ def resolve_local(
     rotulo_renderizado = " ".join(str(field.nearby_text or "").split()).lower()
     pergunta = re.split(r"[?]", rotulo_renderizado, maxsplit=1)[0]
     contexto = f"{signature} {rotulo_renderizado}".lower()
+    contexto_anos = f"{signature} {pergunta}"
     evidencia_humana = human_evidence(profile, contexto)
     if evidencia_humana:
         return (evidencia_humana, "profile.human_evidence", False, "general")
@@ -233,6 +294,10 @@ def resolve_local(
 
     for pattern, path, source in _LOCAL_RULES:
         if re.search(pattern, signature):
+            if path == "years_experience":
+                resposta = _years_threshold_answer(field, profile, contexto_anos)
+                if resposta:
+                    return (resposta[0], resposta[1], False, "general")
             value = _resolvido(path)
             if value:
                 return (value, source, False, "general")
@@ -241,11 +306,18 @@ def resolve_local(
     # de irmãos. Casar no início evita que "Email*" vizinho resolva "Country".
     for pattern, path, source in _LOCAL_RULES:
         if re.match(rf"^\s*(?:{pattern})", rotulo_renderizado, re.IGNORECASE):
+            if path == "years_experience":
+                resposta = _years_threshold_answer(field, profile, contexto_anos)
+                if resposta:
+                    return (resposta[0], resposta[1], False, "general")
             value = _resolvido(path)
             if value:
                 return (value, source, False, "general")
 
     if _ENGLISH_YEARS.search(pergunta):
+        resposta = _years_threshold_answer(field, profile, contexto_anos)
+        if resposta:
+            return (resposta[0], resposta[1], False, "general")
         value = _get_path(profile, "years_experience")
         if value not in (None, ""):
             return (str(value), "profile.years_experience", False, "general")

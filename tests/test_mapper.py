@@ -114,6 +114,39 @@ def test_human_evidence_resolves_referral_question():
     assert not precisa_humano
 
 
+def test_years_threshold_radio_answers_yes_from_profile_years():
+    settings = Settings.load()
+    profile = CandidateProfile(years_experience=7)
+    campo = FormField(
+        label="Yes",
+        field_type="radio",
+        options=["Yes", "No"],
+        nearby_text=(
+            "Do you have at least 3 years of experience developing full stack "
+            "applications using C# and ASP.NET Core?"
+        ),
+    )
+    valor, origem, precisa_humano, categoria = resolve_local(campo, profile, settings)
+    assert valor == "Yes"
+    assert "years_experience" in origem
+    assert not precisa_humano
+    assert categoria == "general"
+
+
+def test_years_threshold_radio_respects_strict_limit():
+    settings = Settings.load()
+    profile = CandidateProfile(years_experience=7)
+    campo = FormField(
+        label="No",
+        field_type="radio",
+        options=["Yes", "No"],
+        nearby_text="Do you have more than 7 years of experience with Python?",
+    )
+    valor, _origem, precisa_humano, _categoria = resolve_local(campo, profile, settings)
+    assert valor == "No"
+    assert not precisa_humano
+
+
 def test_recruitcrm_placeholder_labels_use_rendered_context():
     settings = Settings.load()
     profile = CandidateProfile(

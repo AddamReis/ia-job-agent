@@ -1005,12 +1005,21 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
     if kind == "file":
         target.set_input_files(value)
     elif kind in {"checkbox", "radio"}:
-        truthy = value.strip().lower() in {"true", "sim", "yes", "1", "checked"}
-        if kind == "radio" and not truthy:
+        bruto = str(value or "").strip()
+        minusculo = bruto.lower()
+        # Em rádio, "Yes"/"Sim" é uma opção do grupo (ao lado de "No"), não um
+        # booleano para marcar o input atual. Booleanos literais continuam
+        # seguindo o caminho antigo por compatibilidade com decisões de aceite.
+        radio_booleano = kind == "radio" and minusculo in {
+            "true", "false", "1", "0", "checked", "unchecked"
+        }
+        truthy = minusculo in {"true", "sim", "yes", "1", "checked"}
+        if kind == "radio" and not radio_booleano:
             # Radio de currículo recebe o CAMINHO como valor; outros radios
-            # recebem o valor decidido pelo operador (ex.: PJ/CLT). Em ambos
-            # os casos a escolha segura é procurar em TODO o grupo — o rótulo
-            # visível pode ser "Contractor" enquanto o value é "PJ".
+            # recebem o valor decidido pelo operador (ex.: PJ/CLT/Yes/No). Em
+            # todos os casos a escolha segura é procurar em TODO o grupo — o
+            # rótulo visível pode ser "Yes" enquanto o value é "on".
+            desejado = Path(bruto).name if bruto else ""
             resultado = target.evaluate(
                 r"""(el, wanted) => {
                   const group = el.name
@@ -1046,12 +1055,12 @@ def fill_field(page: Any, index: int, kind: str, value: str) -> bool:
                   if (!found.el.checked) found.el.click();
                   return {matched: true, clicked: !!found.el.checked, options: describe()};
                 }""",
-                Path(value.strip()).name if value.strip() else "",
+                desejado,
             ) or {}
             if not resultado.get("matched"):
                 log_event(
                     "browser_apply_radio_no_match",
-                    desired=Path(value.strip()).name if value.strip() else "",
+                    desired=desejado,
                     options=str(resultado.get("options", ""))[:160],
                 )
                 return False

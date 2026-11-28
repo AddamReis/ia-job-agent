@@ -1119,6 +1119,39 @@ def test_fill_field_radio_aceita_valor_decidido_pelo_operador() -> None:
     assert locator.desejado == "PJ"
 
 
+def test_fill_field_radio_yes_procura_opcao_no_grupo_inteiro() -> None:
+    class Locator:
+        def __init__(self) -> None:
+            self.desejado = ""
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def evaluate(self, expression, wanted=""):
+            self.desejado = wanted
+            assert "input[type=radio]" in expression
+            assert "norm(o.value) === want" in expression
+            return {
+                "matched": True,
+                "clicked": True,
+                "options": "on:Yes | on:No",
+            }
+
+    locator = Locator()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == '[data-agent-field="2"]'
+            return locator
+
+    assert fill_field(Page(), 2, "radio", "Yes") is True
+    assert locator.desejado == "Yes"
+
+
 def test_fill_field_select_aceita_rotulo_equivalente_do_linkedin() -> None:
     class Locator:
         def __init__(self) -> None:
