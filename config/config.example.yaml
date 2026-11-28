@@ -158,6 +158,23 @@ search:
   allow_national_remote: true
   national_countries: ["Brazil"]
 
+# Fontes adicionais de descoberta (API pública; descrição salva já na coleta).
+sources:
+  jobgether:
+    enabled: true
+    base_url: "https://jobgether.com"
+    keywords: [".NET Developer", ".NET Engineer", "Backend Engineer"]
+    locations: ["latam", "brazil", "united-states", "canada"]
+    remote_type: "full-remote"
+    include_hybrid: false
+    contract_types: []
+    sort: "date"
+    page_size: 25
+    max_pages: 1
+    max_details_per_slot: 60
+    timeout_seconds: 20
+    delay_ms: 300
+
 qualification:
   min_score: 70
   min_technology_match: 0.5

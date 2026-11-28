@@ -21,6 +21,7 @@ from ..models.domain import ExecutionHistory
 from ..shared.discovery_window import DiscoveryWindow, compute_window
 from ..storage.database import Repository
 from .browser_research import BrowserResearchAgent
+from .jobgether_research import JobgetherResearchAgent
 
 
 @dataclass(frozen=True)
@@ -33,14 +34,21 @@ class DiscoveryResult:
     window_source: str
     jobs_new: int
     status: str
+    # Vagas novas por plataforma. O LinkedIn mantém a chave de watermark
+    # histórica (só o slot) para não invalidar execuções já gravadas.
+    sources: dict[str, int] | None = None
 
     def describe(self) -> str:
+        por_fonte = (
+            " ".join(f"{name}={count}" for name, count in sorted((self.sources or {}).items()))
+            or "—"
+        )
         return (
             f"slot={self.slot} novas={self.jobs_new} "
             f"janela={self.cutoff.isoformat(timespec='seconds')} -> "
             f"{self.reference_time.isoformat(timespec='seconds')} "
             f"origem={self.window_source} filtro={self.time_filter} "
-            f"trace={self.trace_id}"
+            f"fontes={por_fonte} trace={self.trace_id}"
         )
 
 
@@ -52,6 +60,7 @@ class DiscoveryAgent:
         *,
         repo: Repository | None = None,
         browser: LinkedInPublicBrowser | None = None,
+        sources: list[tuple[str, Any]] | None = None,
     ) -> None:
         self.settings = settings
         self.bus = bus or EventBus()
@@ -64,16 +73,40 @@ class DiscoveryAgent:
         self.research = BrowserResearchAgent(
             self.browser, self.repo, settings, self.bus
         )
+        self.sources: list[tuple[str, Any]] = sources if sources is not None else [
+            ("linkedin", self.research)
+        ]
+        if sources is None and settings.sources.jobgether.enabled:
+            self.sources.append(
+                (
+                    "jobgether",
+                    JobgetherResearchAgent(self.repo, settings, self.bus),
+                )
+            )
 
-    def window(self, slot: str = "auto", now: datetime | None = None) -> DiscoveryWindow:
-        """Resolve o slot e aplica watermark + sobreposição."""
+    @staticmethod
+    def watermark_key(slot: str, source: str = "linkedin") -> str:
+        """LinkedIn preserva a chave antiga; fontes novas ganham sufixo."""
+        if not source or source == "linkedin":
+            return slot
+        return f"{slot}:{source}"
+
+    def window(
+        self,
+        slot: str = "auto",
+        now: datetime | None = None,
+        source: str = "linkedin",
+    ) -> DiscoveryWindow:
+        """Resolve o slot e aplica watermark + sobreposição, por plataforma."""
         cfg = self.settings.discovery_schedule
         resolved = slot
         if slot in {"auto", "", None}:  # type: ignore[comparison-overlap]
             from ..shared.discovery_window import normalize_slot
 
             resolved = normalize_slot(cfg, slot, now)
-        watermark = self.repo.get_discovery_watermark(resolved)
+        watermark = self.repo.get_discovery_watermark(
+            self.watermark_key(resolved, source)
+        )
         last_started = None
         if watermark and watermark.get("status") == ExecutionStatus.COMPLETED.value:
             try:
@@ -93,6 +126,9 @@ class DiscoveryAgent:
         trace = trace_id or str(uuid4())
         set_trace_id(trace)
         self.research.trace_id = trace
+        for _name, agent in self.sources:
+            if hasattr(agent, "trace_id"):
+                agent.trace_id = trace
         cfg = self.settings.discovery_schedule
         lock = RunLock(
             self.repo,
@@ -107,12 +143,24 @@ class DiscoveryAgent:
         # A janela é calculada SÓ depois de adquirir a trava: uma rodada em
         # standby usa o instante em que realmente começa, não o pedido.
         with lock:
-            window = self.window(slot, now)
+            # Uma única âncora de tempo para todas as fontes. Cada plataforma
+            # tem watermark próprio (o LinkedIn conserva a chave histórica).
+            first_name = self.sources[0][0] if self.sources else "linkedin"
+            window = self.window(slot, now, first_name)
+            windows = {
+                name: (
+                    window
+                    if name == first_name
+                    else self.window(window.slot, window.reference_time, name)
+                )
+                for name, _agent in self.sources
+            }
             log_event(
                 "discovery_started",
                 slot=window.slot,
                 trace_id=trace,
                 window=window.describe(),
+                sources=list(windows),
             )
             if self.bus:
                 self.bus.emit("discovery.started", slot=window.slot, trace_id=trace)
@@ -125,25 +173,41 @@ class DiscoveryAgent:
                 status=ExecutionStatus.RUNNING.value,
             )
             self.repo.create_execution(history)
-            self.repo.save_discovery_watermark(
-                window.slot,
-                {
-                    "status": ExecutionStatus.RUNNING.value,
-                    "started_at": window.reference_time.isoformat(),
-                    "cutoff": window.cutoff.isoformat(),
-                    "trace_id": trace,
-                },
-            )
+            for name, source_window in windows.items():
+                self.repo.save_discovery_watermark(
+                    self.watermark_key(window.slot, name),
+                    {
+                        "status": ExecutionStatus.RUNNING.value,
+                        "started_at": source_window.reference_time.isoformat(),
+                        "cutoff": source_window.cutoff.isoformat(),
+                        "trace_id": trace,
+                        "source": name,
+                    },
+                )
 
             jobs_new = 0
+            per_source: dict[str, int] = {}
             status = ExecutionStatus.COMPLETED.value
             try:
                 if not dry_run:
-                    jobs_new = self.research.run(
-                        reference_time=window.reference_time,
-                        cutoff=window.cutoff,
-                        time_filter=window.time_filter,
-                    )
+                    # Serializado de propósito: CDP é único, DGX é único e uma
+                    # rodada em standby não deve disputar banco com a seguinte.
+                    for name, agent in self.sources:
+                        source_window = windows[name]
+                        count = agent.run(
+                            reference_time=source_window.reference_time,
+                            cutoff=source_window.cutoff,
+                            time_filter=source_window.time_filter,
+                        )
+                        per_source[name] = count
+                        jobs_new += count
+                        log_event(
+                            "discovery_source_finished",
+                            slot=window.slot,
+                            source=name,
+                            jobs_new=count,
+                            trace_id=trace,
+                        )
             except Exception as exc:
                 status = ExecutionStatus.ERROR.value
                 history.errors.append(str(exc))
@@ -158,30 +222,36 @@ class DiscoveryAgent:
                     finished - window.reference_time.replace(tzinfo=None)
                 ).total_seconds()
                 self.repo.update_execution(history)
-                self.repo.save_discovery_watermark(
-                    window.slot,
-                    {
-                        "status": status,
-                        "started_at": window.reference_time.isoformat(),
-                        "finished_at": finished.isoformat(),
-                        "cutoff": window.cutoff.isoformat(),
-                        "time_filter": window.time_filter,
-                        "window_source": window.source,
-                        "trace_id": trace,
-                        "jobs_new": jobs_new,
-                        "errors": history.errors,
-                    },
-                )
+                for name, source_window in windows.items():
+                    self.repo.save_discovery_watermark(
+                        self.watermark_key(window.slot, name),
+                        {
+                            "status": status,
+                            "started_at": source_window.reference_time.isoformat(),
+                            "finished_at": finished.isoformat(),
+                            "cutoff": source_window.cutoff.isoformat(),
+                            "time_filter": source_window.time_filter,
+                            "window_source": source_window.source,
+                            "trace_id": trace,
+                            "source": name,
+                            "jobs_new": per_source.get(name, 0),
+                            "errors": history.errors,
+                        },
+                    )
                 log_event(
                     "discovery_finished",
                     slot=window.slot,
                     trace_id=trace,
                     jobs_new=jobs_new,
+                    sources=per_source,
                     status=status,
                 )
                 if self.bus:
                     self.bus.emit(
-                        "discovery.finished", jobs_new=jobs_new, status=status
+                        "discovery.finished",
+                        jobs_new=jobs_new,
+                        sources=per_source,
+                        status=status,
                     )
 
             return DiscoveryResult(
@@ -193,6 +263,7 @@ class DiscoveryAgent:
                 window_source=window.source,
                 jobs_new=jobs_new,
                 status=status,
+                sources=per_source,
             )
 
 

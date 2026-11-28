@@ -119,6 +119,9 @@ class JobRow(Base):
     location: Mapped[str] = mapped_column(String, default="")
     location_normalized: Mapped[str | None] = mapped_column(String, nullable=True, default="")
     url: Mapped[str] = mapped_column(String, default="")
+    # Plataforma de origem (linkedin | jobgether | ...). Vive também no JSON
+    # ``data``, mas como coluna permite dedupe e consultas por fonte.
+    source: Mapped[str] = mapped_column(String, default="linkedin", index=True)
     status: Mapped[str] = mapped_column(String, default="DISCOVERED")
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dedupe_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
@@ -326,6 +329,7 @@ _EXTRA_COLUMNS: dict[str, dict[str, str]] = {
         "apply_failure_reason": "VARCHAR",
         "trace_id": "VARCHAR",
         "location_normalized": "VARCHAR",
+        "source": "VARCHAR DEFAULT 'linkedin'",
     },
     "applications": {"trace_id": "VARCHAR"},
     "companies": {
@@ -353,6 +357,40 @@ def _ensure_columns(engine) -> None:
                     )
 
 
+def _ensure_job_source_column(engine) -> None:
+    """Migration idempotente da coluna ``source`` (SQLite e Postgres).
+
+    ``create_all`` não altera tabelas já existentes; o helper genérico
+    ``_ensure_columns`` só roda no SQLite. Esta coluna é necessária nas duas
+    bases porque o dedupe passou a considerar a plataforma de origem.
+    """
+    inspector = inspect(engine)
+    if "job_opportunities" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("job_opportunities")}
+    has_source = "source" in columns
+    has_index = "ix_job_opportunities_source" in {
+        str(index.get("name") or "") for index in inspector.get_indexes("job_opportunities")
+    }
+    if has_source and has_index:
+        return
+    with engine.begin() as connection:
+        if not has_source:
+            connection.execute(
+                text(
+                    "ALTER TABLE job_opportunities ADD COLUMN source "
+                    "VARCHAR DEFAULT 'linkedin'"
+                )
+            )
+        if not has_index:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_job_opportunities_source "
+                    "ON job_opportunities (source)"
+                )
+            )
+
+
 def _dump(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)
 
@@ -373,8 +411,19 @@ def _dump_job(job: JobOpportunity) -> str:
     return _dump(job)
 
 
-def dedupe_hash(company: str, title: str, location: str, external_id: str = "", url: str = "") -> str:
-    """Dedupe pelo ID REAL da vaga. Título/localização podem mudar sem criar duplicata."""
+def dedupe_hash(
+    company: str,
+    title: str,
+    location: str,
+    external_id: str = "",
+    url: str = "",
+    source: str = "",
+) -> str:
+    """Dedupe pelo ID REAL da vaga. Título/localização podem mudar sem criar duplicata.
+
+    ``source`` entra no hash apenas para plataformas novas: o LinkedIn mantém
+    o hash histórico (sem prefixo), para que vagas já gravadas não dupliquem.
+    """
     real_id = (external_id or url or "").strip().lower()
     if not real_id:
         # Sem ID real não é seguro deduzir identidade — usa os campos como fallback.
@@ -383,6 +432,9 @@ def dedupe_hash(company: str, title: str, location: str, external_id: str = "", 
              (title or "").strip().lower(),
              (location or "").strip().lower()]
         )
+    platform = (source or "").strip().lower()
+    if platform and platform != "linkedin":
+        real_id = f"{platform}|{real_id}"
     return hashlib.sha256(real_id.encode("utf-8")).hexdigest()[:32]
 
 
@@ -408,6 +460,7 @@ class Repository:
                 f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
             )
         Base.metadata.create_all(self.engine)
+        _ensure_job_source_column(self.engine)
         if self.engine.dialect.name == "sqlite":
             # No Postgres o create_all já cria as colunas finais; o helper de
             # ALTER TABLE é específico da migração incremental do SQLite.
@@ -443,6 +496,15 @@ class Repository:
             return schema.model_validate(json.loads(row.data))
 
     # ---- vagas ----
+    def exists_by_dedupe_hash(self, dedupe_hash: str) -> bool:
+        """Checa dedupe SEM gravar — usado antes de pagar a busca da descrição."""
+        if not dedupe_hash:
+            return False
+        with self.session() as session:
+            return session.scalar(
+                select(JobRow.id).where(JobRow.dedupe_hash == dedupe_hash)
+            ) is not None
+
     def upsert_job(self, job: JobOpportunity) -> bool:
         """Retorna True se a vaga é nova; False se já existia (dedupe)."""
         # O vínculo com a empresa é feito AQUI, na gravação da vaga — não
@@ -453,7 +515,7 @@ class Repository:
                 job.company_id = company.id
         if not job.dedupe_hash:
             job.dedupe_hash = dedupe_hash(
-                job.company, job.title, job.location, job.external_id, job.url
+                job.company, job.title, job.location, job.external_id, job.url, job.source
             )
         with self.session() as session:
             existing = session.scalar(
@@ -495,6 +557,7 @@ class Repository:
                     current.company_id = job.company_id or current.company_id
                     current.dedupe_hash = job.dedupe_hash
                     existing.trace_id = current.trace_id
+                    existing.source = current.source
                     existing.company_id = current.company_id
                     existing.external_apply_url = current.external_apply_url
                     existing.external_apply_source = current.external_apply_source
@@ -526,6 +589,7 @@ class Repository:
                     location=job.location,
                     location_normalized=job.location_normalized,
                     url=job.url,
+                    source=job.source,
                     status=job.status.value,
                     score=job.score,
                     dedupe_hash=job.dedupe_hash,
@@ -569,6 +633,7 @@ class Repository:
             row.status = job.status.value
             row.score = job.score
             row.trace_id = job.trace_id
+            row.source = job.source
             row.location_normalized = job.location_normalized
             row.company_id = job.company_id
             row.external_apply_url = job.external_apply_url

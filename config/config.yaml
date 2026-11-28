@@ -139,6 +139,43 @@ search:
   allow_national_remote: true
   national_countries: ["Brazil"]
 
+# Fontes adicionais de descoberta. A classificação continuada 100% DB-only:
+# a descrição completa do offer é buscada AQUI e gravada junto da vaga.
+sources:
+  jobgether:
+    enabled: true
+    base_url: "https://jobgether.com"
+    # Mesmo espírito dos termos do LinkedIn, reduzido ao que a API indexa bem.
+    keywords:
+      - ".NET Developer"
+      - ".NET Engineer"
+      - "Full Stack .NET Developer"
+      - "Backend Engineer"
+      - "Software Engineer"
+    # Slugs da API (locations=latam,brazil,...). Vazio = derivar de search.locations.
+    locations:
+      - "latam"
+      - "brazil"
+      - "united-states"
+      - "canada"
+      - "united-kingdom"
+      - "germany"
+      - "netherlands"
+      - "spain"
+      - "portugal"
+      - "switzerland"
+    remote_type: "full-remote"
+    include_hybrid: false
+    # Vazio = não excluir contractor/fixed-term (comum em vagas LATAM em USD).
+    contract_types: []
+    sort: "date"
+    page_size: 25
+    max_pages: 1
+    # Teto de navegações ao offer por slot — evita sobrecarga sem monitorar 24/7.
+    max_details_per_slot: 60
+    timeout_seconds: 20
+    delay_ms: 300
+
 qualification:
   min_score: 70
   # Exige ao menos esta fração das tecnologias pedidas na descrição.

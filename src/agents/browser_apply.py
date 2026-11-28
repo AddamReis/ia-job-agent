@@ -565,6 +565,19 @@ class BrowserApplyAgent:
 
     @staticmethod
     def job_url(job: JobOpportunity) -> str:
+        # Cada plataforma tem URL canônica própria. Nunca reconstruir a URL de
+        # uma fonte estranha a partir de dígitos (isso apontaria para o LinkedIn).
+        if job.source == "jobgether" or "jobgether.com/offer/" in (job.url or ""):
+            # O offer da Jobgether é só o anúncio: o formulário real está no
+            # link externo capturado na descoberta. Abrir direto nele evita
+            # depender de CTA da plataforma e reaproveita a rota portal externo.
+            external = (job.external_apply_url or "").strip()
+            if external.startswith("https://"):
+                return external
+            url = (job.url or "").strip()
+            if url.startswith("https://jobgether.com/offer/"):
+                return url
+            raise ValidationError("vaga Jobgether sem URL canônica do offer")
         match = re.search(r"(\d{6,})", job.external_id or job.url or "")
         if not match:
             raise ValidationError("vaga sem ID real do LinkedIn; nunca usar URL sintética")

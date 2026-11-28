@@ -121,6 +121,46 @@ class SearchConfig(BaseModel):
     require_explicit_recency: bool = True
 
 
+class JobgetherSourceConfig(BaseModel):
+    """Descoberta na API pública da Jobgether (sem login, sem CDP).
+
+    A listagem não traz descrição: ela é buscada na página do offer já na
+    descoberta e salva no banco, para a classificação ser 100% DB-only.
+    """
+
+    # Desligado por default para que Settings() não abra rede em testes/CLIs
+    # legados; o config.yaml de produção habilita explicitamente.
+    enabled: bool = False
+    base_url: str = "https://jobgether.com"
+    keywords: list[str] = Field(
+        default_factory=lambda: [
+            ".NET Developer",
+            ".NET Engineer",
+            "Full Stack .NET Developer",
+            "Backend Engineer",
+            "Software Engineer",
+        ]
+    )
+    # Slugs aceitos pela API (locations=latam,brazil,germany,...). Nomes
+    # amigáveis do ``search.locations`` são normalizados quando a lista vazia.
+    locations: list[str] = Field(default_factory=list)
+    remote_type: str = "full-remote"
+    include_hybrid: bool = False
+    contract_types: list[str] = Field(default_factory=list)
+    sort: str = "date"
+    page_size: int = Field(default=25, ge=1, le=25)
+    max_pages: int = Field(default=1, ge=1, le=10)
+    max_details_per_slot: int = Field(default=60, ge=1)
+    timeout_seconds: int = Field(default=20, ge=1)
+    delay_ms: int = Field(default=300, ge=0)
+
+
+class SourcesConfig(BaseModel):
+    """Fontes de descoberta além do LinkedIn público."""
+
+    jobgether: JobgetherSourceConfig = Field(default_factory=JobgetherSourceConfig)
+
+
 class WeightsConfig(BaseModel):
     """Pesos do score. Salário NÃO entra no score (moeda filtra à parte).
 
@@ -421,6 +461,7 @@ class Settings(BaseModel):
         default_factory=DiscoveryScheduleConfig
     )
     search: SearchConfig = Field(default_factory=SearchConfig)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)
     qualification: QualificationConfig = Field(default_factory=QualificationConfig)
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     challenges: ChallengeConfig = Field(default_factory=ChallengeConfig)
